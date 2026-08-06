@@ -1,0 +1,96 @@
+{
+  "name": "x402-stellar-kit",
+  "version": "0.1.0",
+  "description": "Offline-first x402 primitives and safe payment orchestration for Stellar",
+  "keywords": [
+    "x402",
+    "stellar",
+    "soroban",
+    "micropayments",
+    "agent",
+    "mcp",
+    "http-402"
+  ],
+  "author": "Alejandro Araya Jiménez <aaj@codestrux.tech>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CodeStrux/x402-stellar-kit.git"
+  },
+  "homepage": "https://github.com/CodeStrux/x402-stellar-kit#readme",
+  "bugs": {
+    "url": "https://github.com/CodeStrux/x402-stellar-kit/issues"
+  },
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "dist",
+    "fixtures",
+    "skill"
+  ],
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./server/hono": {
+      "types": "./dist/src/server/adapters/hono.d.ts",
+      "import": "./dist/src/server/adapters/hono.js"
+    },
+    "./server/express": {
+      "types": "./dist/src/server/adapters/express.d.ts",
+      "import": "./dist/src/server/adapters/express.js"
+    },
+    "./server/next": {
+      "types": "./dist/src/server/adapters/next.d.ts",
+      "import": "./dist/src/server/adapters/next.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/server.d.ts",
+      "import": "./dist/mcp/server.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:live": "vitest run --config vitest.live.config.ts",
+    "demo": "npm run build && node dist/examples/localhost-demo/index.js",
+    "demo:testnet": "npm run build && node dist/examples/testnet-demo/index.js",
+    "demo:usdc": "npm run build && node dist/examples/usdc-demo/index.js",
+    "example:charge": "npm run build && node dist/examples/charge-my-api/index.js",
+    "example:pay": "npm run build && node dist/examples/pay-an-endpoint/index.js",
+    "scan": "./scripts/secret-scan.sh"
+  },
+  "dependencies": {
+    "@stellar/stellar-base": "15.0.0",
+    "zod": "3.25.76"
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/sdk": ">=1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@types/express": "5.0.6",
+    "@types/node": "22.20.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "express": "5.2.1",
+    "hono": "4.13.0",
+    "next": "16.3.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  }
+}

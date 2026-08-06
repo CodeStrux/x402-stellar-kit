@@ -1,0 +1,22 @@
+{
+  "x402Version": 2,
+  "error": "Payment required",
+  "resource": {
+    "url": "http://127.0.0.1:3001/premium",
+    "description": "x402 Stellar kit conformance fixture",
+    "mimeType": "application/json"
+  },
+  "accepts": [
+    {
+      "scheme": "exact",
+      "network": "stellar:testnet",
+      "amount": "100000",
+      "asset": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+      "payTo": "GDWT3YRVK73LUUBIGHEY7BKNO3HHLOARAQLJTP62NSLAJWMXPSKNVTVU",
+      "maxTimeoutSeconds": 60,
+      "extra": {
+        "areFeesSponsored": true
+      }
+    }
+  ]
+}
