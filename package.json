@@ -1,6 +1,6 @@
 {
   "name": "x402-stellar-kit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Offline-first x402 primitives and safe payment orchestration for Stellar",
   "keywords": [
     "x402",
