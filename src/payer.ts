@@ -22,7 +22,10 @@ import {
   decodePaymentRequired,
   decodeSettlementResponse,
   encodePaymentPayload,
+  isExactOffer,
+  type PaymentOffer,
   type PaymentRequired,
+  type PaymentRequirements,
   type SettlementResponse,
 } from "./wire.js";
 
@@ -79,6 +82,42 @@ const assertResponseUrl = (response: Response, expectedUrl: string): void => {
   if (response.url.length > 0 && requestUrl(response.url) !== expectedUrl) {
     throw new WireError("Upstream response URL differs from the requested resource");
   }
+};
+
+/**
+ * Choose the one offer this kit will pay, or say precisely why it will not.
+ *
+ * Exported because `mcp/server.ts` renders a preview of the same choice, and a
+ * preview that picked a different offer — or reported a different denial code —
+ * than the payment would is worse than no preview at all.
+ *
+ * The order is deliberate. Scheme is checked across the whole challenge first,
+ * so a 402 offering only foreign rails reports `POL-SCHEME`, which is true and
+ * actionable, rather than `POL-NETWORK`, which would send an operator to check
+ * a network setting that was never the problem. Once any payable offer exists,
+ * a network mismatch is genuinely a network mismatch.
+ */
+export const selectPayableRequirement = (
+  accepts: readonly PaymentOffer[],
+  allowedNetworks: readonly string[],
+): PaymentRequirements => {
+  const payable = accepts.filter(isExactOffer);
+  if (payable.length === 0) {
+    throw new PolicyDenied(
+      "POL-SCHEME",
+      "No offered payment requirement uses the exact scheme",
+    );
+  }
+  const requirement = payable.find((candidate) =>
+    allowedNetworks.includes(candidate.network),
+  );
+  if (requirement === undefined) {
+    throw new PolicyDenied(
+      "POL-NETWORK",
+      "No offered payment requirement uses an allowed network",
+    );
+  }
+  return requirement;
 };
 
 const throwIfDenied = (decision: PolicyDecision): void => {
@@ -184,15 +223,10 @@ export class Payer {
   async pay(url: string): Promise<PayResult> {
     const challenge = await this.probe(url);
     const normalizedUrl = requestUrl(url);
-    const requirement = challenge.accepts.find((candidate) =>
-      this.#policy.allowedNetworks.includes(candidate.network),
+    const requirement = selectPayableRequirement(
+      challenge.accepts,
+      this.#policy.allowedNetworks,
     );
-    if (requirement === undefined) {
-      throw new PolicyDenied(
-        "POL-NETWORK",
-        "No offered payment requirement uses an allowed network",
-      );
-    }
 
     const intent = paymentIntentFromRequirement(
       requirement,
@@ -202,7 +236,7 @@ export class Payer {
     const decision = evaluate(
       intent,
       this.#policy,
-      this.#window.spentInWindow(this.#now()),
+      await this.#window.spentInWindow(this.#now()),
       this.#now(),
     );
     throwIfDenied(decision);
@@ -216,7 +250,7 @@ export class Payer {
       const currentDecision = evaluate(
         intent,
         this.#policy,
-        this.#window.spentInWindow(this.#now()),
+        await this.#window.spentInWindow(this.#now()),
         this.#now(),
       );
       throwIfDenied(currentDecision);
@@ -224,12 +258,23 @@ export class Payer {
 
     this.#reservationSequence += 1;
     const reservationId = `${this.#reservationNamespace}:${intentHash}:${this.#reservationSequence}`;
-    this.#window.reserve(
+    // The store, not the check above, is the authority on the cap. That check
+    // ran before the approver and may be seconds stale; against a shared store
+    // another replica can have spent the budget in between, and only the store
+    // can see it.
+    const reservation = await this.#window.reserve(
       reservationId,
       intent.amountUnits,
       this.#now(),
       intentHash,
+      this.#policy.windowCapUnits,
     );
+    if (!reservation.accepted) {
+      throw new PolicyDenied(
+        "POL-WINDOW",
+        `Payment exceeds the rolling-window cap; the store holds ${reservation.spentUnits} units against a cap of ${this.#policy.windowCapUnits}`,
+      );
+    }
     let signatureTransmitted = false;
 
     try {
@@ -244,7 +289,7 @@ export class Payer {
       });
       // Make the debit non-expiring before the transport can receive the
       // signature; an in-flight request may outlive the rolling window.
-      this.#window.markIndeterminate(reservationId);
+      await this.#window.markIndeterminate(reservationId);
       // From this point onward, any failure is ambiguous: the signed payment
       // may settle even if no response arrives.
       signatureTransmitted = true;
@@ -283,17 +328,21 @@ export class Payer {
         intentHash,
         amountUnits: intent.amountUnits,
       });
-      this.#window.commit(reservationId);
+      await this.#window.commit(reservationId);
       return result;
     } catch (error) {
       if (!signatureTransmitted) {
-        this.#window.release(reservationId);
+        await this.#window.release(reservationId);
         throw error;
       }
 
       const contextualError = withTransmissionContext(error, intentHash);
       try {
-        this.#window.markIndeterminate(reservationId);
+        // `await` is load-bearing: without it a rejected store becomes an
+        // unhandled rejection, the catch below never runs, and the caller is
+        // told the payment is merely indeterminate when in fact nothing
+        // recorded that it was.
+        await this.#window.markIndeterminate(reservationId);
       } catch (storeError) {
         throw withTransmissionContext(
           new X402KitError(

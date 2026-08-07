@@ -130,18 +130,30 @@ const establishUsdcTrustline = async (
   });
 };
 
-const send = (result: ResourceResult, response: ServerResponse): void => {
+const send = async (
+  result: ResourceResult,
+  response: ServerResponse,
+): Promise<void> => {
   if (result.kind === "challenge") {
     response.writeHead(result.status, result.headers);
     response.end("payment required");
     return;
   }
-  if (result.kind === "paid") {
-    response.writeHead(result.status, {
-      ...result.headers,
+  if (result.kind === "verified") {
+    // Produce the resource FIRST, settle only once it exists. Settling before
+    // the handler charges the payer for responses they never receive.
+    const body = JSON.stringify({ message: "USDC-gated testnet resource" });
+    const settled = await result.settle();
+    if (settled.kind === "rejected") {
+      response.writeHead(settled.status, { "content-type": "text/plain" });
+      response.end(settled.reason);
+      return;
+    }
+    response.writeHead(settled.status, {
+      ...settled.headers,
       "content-type": "application/json",
     });
-    response.end(JSON.stringify({ message: "USDC-gated testnet resource" }));
+    response.end(body);
     return;
   }
   response.writeHead(result.status, { "content-type": "text/plain" });
@@ -206,7 +218,7 @@ const main = async (): Promise<void> => {
           (signedRequests.get(url.pathname) ?? 0) + 1,
         );
       }
-      send(
+      await send(
         await route.handle({
           method: request.method ?? "GET",
           url: url.toString(),

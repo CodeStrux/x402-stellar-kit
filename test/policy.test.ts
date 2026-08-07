@@ -65,7 +65,7 @@ describe("policy evaluation order", () => {
           scheme: "other",
           network: "stellar:pubnet",
           amountUnits: 0n,
-        } as PaymentIntent,
+        } as unknown as PaymentIntent,
         config,
         10_000n,
         1_000,
@@ -217,6 +217,56 @@ describe("policy boundaries", () => {
       evaluate(
         intent,
         { ...config, maxTimeoutSeconds: Number.NaN },
+        0n,
+        1_000,
+      ),
+    ).toMatchObject({ outcome: "deny", code: "POL-TIMEOUT" });
+  });
+});
+
+/**
+ * The defect this covers: the timeout check was
+ * `Number.isFinite(...) && > 0 && <= config.maxTimeoutSeconds`. Two properties
+ * were lost porting the original policy engine, which required a whole number
+ * in 10..300: the floor, and integrality.
+ *
+ * The floor is the one that costs money. A hostile resource server advertising
+ * a two-second timeout gets a payment signed with time bounds already close to
+ * expired. It can never settle — but the payer transmitted it, and
+ * `markIndeterminate` turned the reservation into a non-expiring debit only a
+ * human can clear. Repeat that and the rolling budget drains without a single
+ * payment landing.
+ *
+ * Every value below is chosen to be **accepted by the old check**: each is
+ * greater than zero and at or under the configured 60. Reusing the existing
+ * `0`, `NaN` or `61` cases would prove nothing, because those already denied.
+ */
+describe("the payment timeout has a floor, and must be whole seconds", () => {
+  it.each([
+    ["just under the floor", 9],
+    ["a two-second window no ledger can honour", 2],
+    ["one second", 1],
+    ["a fractional timeout", 30.5],
+  ] as const)("denies %s", (_name, maxTimeoutSeconds) => {
+    expect(
+      evaluate({ ...intent, maxTimeoutSeconds }, config, 0n, 1_000),
+    ).toMatchObject({ outcome: "deny", code: "POL-TIMEOUT" });
+  });
+
+  it("allows exactly the floor", () => {
+    // Pinned so a later tightening of the floor cannot pass unnoticed.
+    expect(
+      evaluate({ ...intent, maxTimeoutSeconds: 10 }, config, 0n, 1_000),
+    ).toMatchObject({ outcome: "allow" });
+  });
+
+  it("denies consistently when an operator configures a cap below the floor", () => {
+    // A throw would be a different failure mode; `evaluate` runs on untrusted
+    // input and its contract is to return decisions.
+    expect(
+      evaluate(
+        { ...intent, maxTimeoutSeconds: 10 },
+        { ...config, maxTimeoutSeconds: 5 },
         0n,
         1_000,
       ),

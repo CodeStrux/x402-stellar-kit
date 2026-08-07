@@ -1,4 +1,5 @@
 import type { PaymentIntent } from "../intent.js";
+import { MIN_TIMEOUT_SECONDS } from "../stellar/timing.js";
 import type { PolicyConfig, PolicyDecision, PolicyCode } from "./types.js";
 
 const deny = (code: PolicyCode, reason: string): PolicyDecision => ({
@@ -94,15 +95,30 @@ export const evaluate = (
   if (!listAllows(config.assetAllowlist, intent.asset, "assetAllowlist")) {
     return deny("POL-ASSET", "Payment asset is not allowed");
   }
+  /*
+   * A floor, not just a ceiling, and whole seconds only.
+   *
+   * A hostile resource server that advertises a two-second timeout gets a
+   * payment signed with time bounds already close to expired. It can never
+   * settle — but the payer transmitted it, and `markIndeterminate` made the
+   * reservation a non-expiring debit that only a human can clear. Repeat that
+   * and the rolling budget drains without a single payment landing.
+   *
+   * `Number.isFinite` also admitted `30.5`, which is not a timeout any ledger
+   * can honour and which silently changes `intentHash` for what a human reads
+   * as the same offer.
+   *
+   * An operator who configures `maxTimeoutSeconds` below the floor gets a
+   * consistent denial rather than a throw: `evaluate` runs on untrusted input
+   * and its contract is to return decisions.
+   */
   if (
-    !Number.isFinite(intent.maxTimeoutSeconds) ||
+    !Number.isSafeInteger(intent.maxTimeoutSeconds) ||
     !Number.isFinite(config.maxTimeoutSeconds) ||
-    !(
-      intent.maxTimeoutSeconds > 0 &&
-      intent.maxTimeoutSeconds <= config.maxTimeoutSeconds
-    )
+    intent.maxTimeoutSeconds < MIN_TIMEOUT_SECONDS ||
+    intent.maxTimeoutSeconds > config.maxTimeoutSeconds
   ) {
-    return deny("POL-TIMEOUT", "Payment timeout exceeds policy");
+    return deny("POL-TIMEOUT", "Payment timeout is outside the allowed bound");
   }
   if (intent.amountUnits <= 0n || intent.amountUnits > config.maxPaymentUnits) {
     return deny("POL-MAX", "Payment amount exceeds policy");

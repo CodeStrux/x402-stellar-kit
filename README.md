@@ -8,6 +8,22 @@ npm run demo:usdc      real testnet USDC · one manual faucet top-up
 
 This is **testnet-oriented teaching software**. Start on the first rung, inspect what changes on the second, and use the third only when you want to fund testnet USDC manually. Anyone pointing this code at pubnet owns their own key management, shared-budget implementation, operational controls, and limits.
 
+## Install
+
+```bash
+npm install x402-stellar-kit
+```
+
+Requires **Node 22 or newer**. The money path has exactly two runtime dependencies, both exact-pinned: [`@stellar/stellar-base`](https://www.npmjs.com/package/@stellar/stellar-base) and [`zod`](https://www.npmjs.com/package/zod). Your web framework is your choice and never a dependency of this package.
+
+The MCP entry point (`x402-stellar-kit/mcp`) needs one optional peer, installed only if you use it:
+
+```bash
+npm install @modelcontextprotocol/sdk
+```
+
+> **Use `0.2.0` or later.** `0.1.0` is deprecated for payment-authorization defects — see [CHANGELOG.md](./CHANGELOG.md).
+
 ## What x402 is
 
 x402 uses the HTTP `402 Payment Required` status as a machine-readable price quote. A resource first answers a normal GET with `PAYMENT-REQUIRED`; a payer chooses one offer, applies deterministic policy and any required external approval, signs exactly what was approved, retries with `PAYMENT-SIGNATURE`, and receives the resource plus `PAYMENT-RESPONSE` after verification and settlement. The protocol makes payment part of HTTP, but it does not make an agent a source of spending authority.

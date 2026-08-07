@@ -135,14 +135,14 @@ describe("indeterminate payer outcomes", () => {
         thrown = error;
       }
 
-      const indeterminate = window.listIndeterminate(now);
+      const indeterminate = await window.listIndeterminate(now);
       expect(indeterminate).toHaveLength(1);
       expect(indeterminate[0]).toMatchObject({
         units: amountUnits,
         reservedAt: now,
         intentHash: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
-      expect(window.spentInWindow(now)).toBe(amountUnits);
+      expect(await window.spentInWindow(now)).toBe(amountUnits);
       expect(thrown).toMatchObject({
         transmitted: true,
         intentHash: indeterminate[0]?.intentHash,
@@ -157,8 +157,8 @@ describe("indeterminate payer outcomes", () => {
         code: "POL-WINDOW",
       });
       expect(fetchLike).toHaveBeenCalledTimes(3);
-      expect(window.spentInWindow(now)).toBe(amountUnits);
-      expect(window.listIndeterminate(now)).toEqual(indeterminate);
+      expect(await window.spentInWindow(now)).toBe(amountUnits);
+      expect(await window.listIndeterminate(now)).toEqual(indeterminate);
     },
   );
 
@@ -206,13 +206,13 @@ describe("indeterminate payer outcomes", () => {
       code: "POL-WINDOW",
     });
     expect(paidRequests).toBe(1);
-    expect(window.spentInWindow(currentNow)).toBe(amountUnits);
+    expect(await window.spentInWindow(currentNow)).toBe(amountUnits);
 
     rejectPaidRequest?.(new TypeError("connection reset"));
     await expect(firstFailure).resolves.toMatchObject({
       transmitted: true,
       intentHash: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
-    expect(window.listIndeterminate(currentNow)).toHaveLength(1);
+    expect(await window.listIndeterminate(currentNow)).toHaveLength(1);
   });
 });

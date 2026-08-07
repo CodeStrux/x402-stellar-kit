@@ -27,7 +27,9 @@
   },
   "files": [
     "AGENTS.md",
+    "CHANGELOG.md",
     "CLAUDE.md",
+    "SECURITY.md",
     "dist",
     "fixtures",
     "skill"
@@ -58,6 +60,8 @@
   },
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "verify": "npm run build && npm run typecheck && npm test && ./scripts/secret-scan.sh && ./scripts/verify-dist.sh",
     "test": "vitest run",
     "test:live": "vitest run --config vitest.live.config.ts",
     "demo": "npm run build && node dist/examples/localhost-demo/index.js",
@@ -65,7 +69,9 @@
     "demo:usdc": "npm run build && node dist/examples/usdc-demo/index.js",
     "example:charge": "npm run build && node dist/examples/charge-my-api/index.js",
     "example:pay": "npm run build && node dist/examples/pay-an-endpoint/index.js",
-    "scan": "./scripts/secret-scan.sh"
+    "scan": "./scripts/secret-scan.sh",
+    "verify:dist": "./scripts/verify-dist.sh",
+    "prepublishOnly": "npm run build && ./scripts/verify-dist.sh"
   },
   "dependencies": {
     "@stellar/stellar-base": "15.0.0",

@@ -10,6 +10,7 @@ import {
   MockSigner,
   NETWORKS,
   Payer,
+  selectPayableRequirement,
   PolicyDenied,
   createResourceServer,
   decodePaymentRequired,
@@ -55,21 +56,30 @@ class RecordingApprover implements Approver {
   }
 }
 
-const sendResult = (
+const sendResult = async (
   result: ResourceResult,
   response: import("node:http").ServerResponse,
-): void => {
+): Promise<void> => {
   if (result.kind === "challenge") {
     response.writeHead(result.status, result.headers);
     response.end("payment required");
     return;
   }
-  if (result.kind === "paid") {
-    response.writeHead(result.status, {
-      ...result.headers,
+  if (result.kind === "verified") {
+    // Produce the resource FIRST, settle only once it exists. Settling before
+    // the handler charges the payer for responses they never receive.
+    const body = JSON.stringify({ message: "offline paid resource" });
+    const settled = await result.settle();
+    if (settled.kind === "rejected") {
+      response.writeHead(settled.status, { "content-type": "text/plain" });
+      response.end(settled.reason);
+      return;
+    }
+    response.writeHead(settled.status, {
+      ...settled.headers,
       "content-type": "application/json",
     });
-    response.end(JSON.stringify({ message: "offline paid resource" }));
+    response.end(body);
     return;
   }
   response.writeHead(result.status, { "content-type": "text/plain" });
@@ -110,7 +120,7 @@ const main = async (): Promise<void> => {
         );
       }
 
-      sendResult(
+      await sendResult(
         await route.handle({
           method: request.method ?? "GET",
           url: url.toString(),
@@ -191,7 +201,14 @@ const main = async (): Promise<void> => {
     if (challenge === undefined) {
       throw new Error("Demo did not capture a payment challenge");
     }
-    const selected = challenge.accepts[0];
+    // A decoded challenge may advertise rails this kit cannot pay, so an offer
+    // has to be narrowed before it can become an intent. `selectPayableRequirement`
+    // is what `Payer.pay` itself uses, and it reports POL-SCHEME when nothing
+    // on offer is payable.
+    const selected = selectPayableRequirement(
+      challenge.accepts,
+      policy.allowedNetworks,
+    );
     const intent = paymentIntentFromRequirement(selected, challenge.resource.url);
     const challengeHash = intentHash(intent);
     const decision = evaluate(intent, policy, 0n, Date.now());

@@ -36,6 +36,54 @@ const networkPassphrase = (network: string): string => {
   return drift("network");
 };
 
+type TransferArgument = Readonly<{ field: string; type: xdr.ScValType }>;
+
+/**
+ * The ScVal type each `transfer` argument must carry, in argument order.
+ *
+ * `scValToNative` is a lossy projection, and the loss lands exactly where the
+ * money is. `scvString`, `scvSymbol` and `scvAddress` all come back as one
+ * ordinary JavaScript string, and `scvI64`, `scvU64`, `scvI128`, `scvU128`,
+ * `scvI256`, `scvU256`, `scvTimepoint` and `scvDuration` all come back as one
+ * ordinary `bigint`. So a transfer carrying `scvString("G…")` where the
+ * contract demands an address, or `scvU128(100000)` where it demands `i128`,
+ * compared *equal* to the approved intent on every field this function used to
+ * look at. It was signed, the binding check waved it through, and it was
+ * transmitted.
+ *
+ * The host refuses it eventually, which is the part that sounds harmless and is
+ * not. That refusal happens *after* transmission, and the payer calls
+ * `markIndeterminate` immediately before a signed request can reach the
+ * resource: the reservation becomes a non-expiring debit against the rolling
+ * window that only a human reconciling the ledger can release. A merely buggy
+ * signer burns the budget one call at a time; a hostile one freezes it on
+ * demand, for free, without ever spending a stroop — and every one of those
+ * requests looks, to policy and to the approver, exactly like the payment the
+ * human authorized.
+ *
+ * Pinning the switch is what makes the value comparison below mean anything.
+ * With the type fixed there is one interpretation of each argument, so
+ * `scValToNative` is no longer standing in for a type check it cannot perform.
+ *
+ * The gate is `scvAddress`, deliberately not a particular *kind* of address: a
+ * contract (`C…`) payee is a legitimate recipient of a SAC transfer, and the
+ * string comparison against `intent.payTo` already decides which address is
+ * authorized.
+ */
+const TRANSFER_ARGUMENTS: readonly TransferArgument[] = [
+  { field: "from", type: xdr.ScValType.scvAddress() },
+  { field: "to", type: xdr.ScValType.scvAddress() },
+  { field: "amount", type: xdr.ScValType.scvI128() },
+];
+
+const assertArgumentTypes = (args: readonly xdr.ScVal[]): void => {
+  TRANSFER_ARGUMENTS.forEach((expected, index) => {
+    if (args[index].switch().value !== expected.type.value) {
+      drift(`${expected.field} ScVal type`);
+    }
+  });
+};
+
 const assertInvocation = (
   invocation: xdr.InvokeContractArgs,
   intent: PaymentIntent,
@@ -51,7 +99,23 @@ const assertInvocation = (
   if (args.length !== 3) {
     drift("arguments");
   }
+  assertArgumentTypes(args);
 
+  /*
+   * `scValToNative` stays, on purpose. With the switch pinned above it has one
+   * meaning per argument: an `scvAddress` decodes as
+   * `Address.fromScVal(...).toString()`, character for character what decoding
+   * by hand here would write, and an `scvI128` decodes through the same
+   * two's-complement reader the rest of the ecosystem uses. Hand-rolling a
+   * second 128-bit parser onto the money path would be a larger risk than the
+   * one being closed, and the problem was never decoding.
+   *
+   * The decode can still throw — `Address.fromScAddress` refuses an ScAddress
+   * variety it does not recognise — so the `BindingDrift` wrapping stays: an
+   * argument this code cannot read is drift, never a pass. The `typeof amount`
+   * guard stays for the same reason, and keeps this function correct if the
+   * table above is ever edited.
+   */
   let from: unknown;
   let to: unknown;
   let amount: unknown;

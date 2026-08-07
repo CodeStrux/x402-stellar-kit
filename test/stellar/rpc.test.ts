@@ -30,7 +30,7 @@ describe("StellarRpc", () => {
         4,
       ),
     ];
-    const fetchLike = vi.fn(async () => replies.shift() as Response);
+    const fetchLike = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => replies.shift() as Response);
     const rpc = new StellarRpc("https://rpc.example.test", { fetchLike });
 
     await expect(rpc.getLatestLedger(signal(), 1_000)).resolves.toMatchObject({

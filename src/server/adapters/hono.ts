@@ -19,6 +19,8 @@ type HonoContext = Readonly<{
   }>;
   header(name: string, value: string): void;
   text(value: string, status: 400 | 402 | 405): Response;
+  /** Set by Hono once the downstream handler has run. */
+  res?: { status: number } | undefined;
 }>;
 
 export type X402HonoMiddleware = (
@@ -51,8 +53,20 @@ export const x402Hono = (
       }
       return context.text("payment required", result.status);
     }
+    // Serve first, settle second. A handler that throws or answers 5xx must not
+    // cost the payer anything: they would be billed for a response they never
+    // received, and their budget would carry a non-expiring indeterminate debit
+    // needing manual reconciliation.
     await next();
-    for (const [name, value] of Object.entries(result.headers)) {
+
+    const status = context.res?.status ?? 200;
+    if (status < 200 || status >= 300) return;
+
+    const settled = await result.settle();
+    if (settled.kind === "rejected") {
+      return context.text(settled.reason, settled.status);
+    }
+    for (const [name, value] of Object.entries(settled.headers)) {
       context.header(name, value);
     }
   };

@@ -127,4 +127,101 @@ describe("x402Express", () => {
     expect(protectedCalls).toBe(0);
     expect(facilitator.balance(PAYER)).toBe(200_000n);
   });
+
+  /**
+   * The defect these cover: the adapter reconstructed the request URL from
+   * `request.protocol`, which behind any TLS terminator is plain `http` unless
+   * the application has set `trust proxy`. The configured resource URL is
+   * `https`, so the resource server's URL equality check refused **every** paid
+   * request with a bare 400 that named neither URL.
+   */
+  describe("behind a TLS terminator", () => {
+    const listen = async () => {
+      const app = express();
+      const server = createServer(app);
+      servers.push(server);
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        throw new Error("Expected an internet socket");
+      }
+      // The socket is plain http — as an origin behind a terminator always is.
+      // The operator configures the public https URL callers actually use.
+      return {
+        app,
+        requestUrl: `http://127.0.0.1:${address.port}/paid`,
+        resourceUrl: `https://127.0.0.1:${address.port}/paid`,
+      };
+    };
+
+    const mount = (
+      app: ReturnType<typeof express>,
+      resourceUrl: string,
+      trustForwardedProto: boolean,
+    ) => {
+      const { config } = adapterConfig(resourceUrl);
+      const frameworkProtocol: string[] = [];
+      app.get(
+        "/paid",
+        (request, _response, next) => {
+          // Proof the header is doing the work: Express itself still reports
+          // plain http, because `trust proxy` is off. Without this the test
+          // could pass on a framework that already resolved the scheme.
+          frameworkProtocol.push(request.protocol);
+          next();
+        },
+        x402Express({ ...config, trustForwardedProto }),
+        (_request, response) => response.status(204).end(),
+      );
+      return frameworkProtocol;
+    };
+
+    it("serves the request when told to trust the forwarded scheme", async () => {
+      const { app, requestUrl, resourceUrl } = await listen();
+      const frameworkProtocol = mount(app, resourceUrl, true);
+
+      const response = await httpGet(requestUrl, { "x-forwarded-proto": "https" });
+
+      expect(response.status).toBe(402);
+      expect(response.headers[HEADERS.paymentRequired.toLowerCase()]).toBeTypeOf(
+        "string",
+      );
+      expect(frameworkProtocol).toEqual(["http"]);
+    });
+
+    it("takes the client-facing hop from a chained forwarded header", async () => {
+      const { app, requestUrl, resourceUrl } = await listen();
+      mount(app, resourceUrl, true);
+
+      const response = await httpGet(requestUrl, {
+        "x-forwarded-proto": "https, http",
+      });
+
+      expect(response.status).toBe(402);
+    });
+
+    it("refuses by default, and says why", async () => {
+      const { app, requestUrl, resourceUrl } = await listen();
+      mount(app, resourceUrl, false);
+
+      const response = await httpGet(requestUrl, { "x-forwarded-proto": "https" });
+
+      // Default-deny is the point: the kit never silently trusts a header the
+      // caller sets. But the refusal has to be actionable.
+      expect(response.status).toBe(400);
+      expect(response.body).toContain(requestUrl);
+      expect(response.body).toContain(resourceUrl);
+      expect(response.body).toMatch(/x-forwarded-proto/i);
+    });
+
+    it("ignores a forwarded scheme that is not http or https", async () => {
+      const { app, requestUrl, resourceUrl } = await listen();
+      mount(app, resourceUrl, true);
+
+      const response = await httpGet(requestUrl, { "x-forwarded-proto": "gopher" });
+
+      expect(response.status).toBe(400);
+    });
+  });
 });

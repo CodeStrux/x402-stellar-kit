@@ -1,0 +1,56 @@
+name: CI
+
+# The secret scan has until now run only as a local pre-commit hook, which means
+# it protected exactly one machine. This runs it on every push and pull request,
+# alongside the build, the type check and the offline test suite.
+#
+# Deliberately absent: any publish step, any deploy, any secret. Releases are cut
+# by hand — publishing needs a 2FA OTP no workflow can supply, and that is the
+# intended property, not a limitation to engineer around.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # secret-scan.sh asks git for the repository root and enumerates
+          # tracked files; a shallow checkout is enough for both.
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # --ignore-scripts on install, matching .npmrc and the documented posture:
+      # a dependency must not be able to run code just because it was installed.
+      - run: npm ci --ignore-scripts
+
+      - name: Build
+        run: npm run build
+
+      - name: Type-check src, mcp, examples and test
+        run: npm run typecheck
+
+      - name: Test (offline; no keys, no network)
+        run: npm test
+
+      - name: Secret and provenance scan
+        run: ./scripts/secret-scan.sh
+
+      - name: Verify the publishable dist
+        run: ./scripts/verify-dist.sh
+
+      # Proves the offline demo still completes its whole refusal sequence —
+      # the thing a reader runs first, and the one that breaks silently.
+      - name: Offline demo
+        run: npm run demo

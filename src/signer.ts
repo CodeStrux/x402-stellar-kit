@@ -4,7 +4,16 @@ import { canonicalJson, type PaymentIntent } from "./intent.js";
 export interface Signer {
   address(): string;
   sign(intent: PaymentIntent): Promise<{ transaction: string }>;
-  verifyBinding(transaction: string, intent: PaymentIntent): void;
+  /**
+   * Prove the signed transaction still matches the approved intent, before a
+   * byte of it is transmitted.
+   *
+   * May be asynchronous: bounding the lifetime of a Soroban authorization
+   * requires knowing the current ledger, and an implementation that does not
+   * already hold one has to go and ask. `Payer` awaits the result either way,
+   * so a synchronous implementation remains valid.
+   */
+  verifyBinding(transaction: string, intent: PaymentIntent): void | Promise<void>;
 }
 
 const boundIntent = (intent: PaymentIntent): PaymentIntent => ({

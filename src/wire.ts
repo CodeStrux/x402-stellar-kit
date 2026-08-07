@@ -26,12 +26,66 @@ export const ResourceInfoSchema = z
   })
   .passthrough();
 
+/**
+ * An offer on a rail this kit cannot pay, carried instead of rejected.
+ *
+ * A 402 may legitimately advertise several schemes at once. Failing the whole
+ * array because one entry is not `exact` throws away a payable offer sitting
+ * right beside it, and reports "malformed wire data" where the honest answer is
+ * `POL-SCHEME` — a denial the kit documents and, before this, could never
+ * actually produce.
+ *
+ * `.strip()`, not `.passthrough()`: nothing here ever reads a field of an offer
+ * it cannot pay, and `encodePaymentRequired` would faithfully re-serialise
+ * whatever was retained. Carrying `{ scheme }` alone keeps unvalidated foreign
+ * content from making a round trip through our own wire.
+ *
+ * The refinement matters. Without it a *malformed* `exact` offer would fall
+ * through to this branch, survive as `{ scheme: "exact" }`, pass the scheme
+ * filter downstream, and arrive at intent construction with its amount and
+ * payee missing. An offer claiming our scheme must satisfy our schema; only
+ * genuinely foreign schemes are waved past.
+ */
+const UnsupportedOfferSchema = z
+  .object({ scheme: z.string() })
+  .strip()
+  .refine((offer) => offer.scheme !== "exact", {
+    message: "an offer using the exact scheme must satisfy the full requirements schema",
+  });
+
+const OfferSchema = z.union([PaymentRequirementsSchema, UnsupportedOfferSchema]);
+
+/**
+ * What this kit is willing to **emit**: only offers it could itself honour.
+ *
+ * A resource server built on this package must never advertise a scheme it
+ * cannot settle, so the encode path stays strict even though the decode path
+ * below is deliberately generous.
+ */
 export const PaymentRequiredSchema = z
   .object({
     x402Version: z.literal(X402_VERSION),
     error: z.string().nullish(),
     resource: ResourceInfoSchema,
     accepts: z.array(PaymentRequirementsSchema).min(1),
+    extensions: z.record(z.unknown()).nullish(),
+  })
+  .passthrough();
+
+/**
+ * What this kit is willing to **accept**. Identical but for `accepts`, which
+ * tolerates offers on other rails. Be strict in what you emit, generous in what
+ * you receive — and let policy, not the parser, decide what gets paid.
+ *
+ * Generous about *schemes*, not about structure: a null or non-object entry is
+ * a broken peer rather than a foreign rail, and is still refused outright.
+ */
+export const PaymentChallengeSchema = z
+  .object({
+    x402Version: z.literal(X402_VERSION),
+    error: z.string().nullish(),
+    resource: ResourceInfoSchema,
+    accepts: z.array(OfferSchema).min(1),
     extensions: z.record(z.unknown()).nullish(),
   })
   .passthrough();
@@ -78,7 +132,20 @@ export const FacilitatorRequestSchema = z
 
 export type PaymentRequirements = z.infer<typeof PaymentRequirementsSchema>;
 export type ResourceInfo = z.infer<typeof ResourceInfoSchema>;
-export type PaymentRequired = z.infer<typeof PaymentRequiredSchema>;
+export type PaymentOffer = z.infer<typeof OfferSchema>;
+/**
+ * A decoded challenge. `accepts` is the *received* shape, so it may hold offers
+ * on rails this kit cannot pay; narrow with `isExactOffer` before using one.
+ */
+export type PaymentRequired = z.infer<typeof PaymentChallengeSchema>;
+
+/**
+ * The only sanctioned way to go from a received offer to something payable.
+ * A plain `offer.scheme === "exact"` comparison does not narrow the union,
+ * because the unsupported branch is typed with a plain `string`.
+ */
+export const isExactOffer = (offer: PaymentOffer): offer is PaymentRequirements =>
+  offer.scheme === "exact";
 export type PaymentPayload = z.infer<typeof PaymentPayloadSchema>;
 export type SettlementResponse = z.infer<typeof SettlementResponseSchema>;
 export type VerifyResponse = z.infer<typeof VerifyResponseSchema>;
@@ -122,7 +189,7 @@ const decode = <T>(schema: z.ZodType<T>, encoded: string): T => {
 export const encodePaymentRequired = (value: unknown): string =>
   encode(PaymentRequiredSchema, value);
 export const decodePaymentRequired = (encoded: string): PaymentRequired =>
-  decode(PaymentRequiredSchema, encoded);
+  decode(PaymentChallengeSchema, encoded);
 
 export const encodePaymentPayload = (value: unknown): string =>
   encode(PaymentPayloadSchema, value);

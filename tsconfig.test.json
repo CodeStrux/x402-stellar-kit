@@ -1,0 +1,8 @@
+{
+  "//": "The build deliberately emits only src/, mcp/ and examples/, so `npm run build` never type-checks a single test file. That is tolerable until an interface changes shape — an un-migrated store or a forgotten `await` produces a Promise where a bigint belongs, TypeScript erases the evidence at runtime, and nothing in the repo says a word. This config exists so `npm run typecheck` does.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "mcp/**/*.ts", "examples/**/*.ts", "test/**/*.ts"]
+}

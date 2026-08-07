@@ -145,6 +145,32 @@ export class LocalFacilitator implements Facilitator {
   readonly #timeoutMs: number;
   readonly #pollIntervalMs: number;
   readonly #settlementTimeoutMs: number;
+  /**
+   * One settlement at a time, per instance.
+   *
+   * The fee source's sequence number is read from Horizon and then incremented
+   * locally by `TransactionBuilder`, so two overlapping settlements build the
+   * same sequence and the network refuses one of them with `tx_bad_seq`. That
+   * refusal lands on a payer who has already transmitted their signature and
+   * already recorded a non-expiring indeterminate debit: a race in here becomes
+   * somebody else's manual reconciliation, for a payment they authorized
+   * correctly.
+   *
+   * The lock is held across the poll, not released at submission, and that is
+   * deliberate. Horizon advances an account's sequence only when a transaction
+   * is *included in a ledger*, never when it is merely accepted for submission
+   * — so releasing on `PENDING` would hand the next settlement the same stale
+   * sequence and rebuild the identical collision. Reserving `N+2` locally does
+   * not help either: Stellar core admits at most one pending transaction per
+   * source account, so the network answers `TRY_AGAIN_LATER` and only an
+   * obliging test double would pretend otherwise.
+   *
+   * The honest consequence, stated rather than hidden: settlements through one
+   * fee source are inherently serial, so throughput here is bounded by ledger
+   * close time — roughly one settlement every five seconds per instance. A
+   * deployment that needs more needs more fee sources, not a cleverer lock.
+   */
+  #settlements: Promise<unknown> = Promise.resolve();
 
   constructor(options: LocalFacilitatorOptions) {
     if (!options.sourceKeypair.canSign()) {
@@ -422,6 +448,12 @@ export class LocalFacilitator implements Facilitator {
     };
   }
 
+  /**
+   * Deliberately not serialized. `verify` prepares and simulates but never
+   * submits, so it consumes no sequence number and cannot collide with anything
+   * — and putting it behind the settlement queue would make every verification
+   * wait on an unrelated payment's ledger close.
+   */
   async verify(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
@@ -437,7 +469,34 @@ export class LocalFacilitator implements Facilitator {
     }
   }
 
-  async settle(
+  /**
+   * Queue `operation` behind every settlement already in flight on this
+   * instance.
+   *
+   * The queue tail is stored **settled**, never rejected, and that single
+   * detail is the whole of the poison-proofing: a settlement that throws hands
+   * the queue on to the one waiting behind it instead of stranding every later
+   * caller on a promise that will never call their handler. The caller still
+   * receives its own rejection, because that is the promise returned here — the
+   * failure is passed on, not swallowed.
+   */
+  #serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.#settlements.then(operation);
+    this.#settlements = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  settle(
+    payload: PaymentPayload,
+    requirements: PaymentRequirements,
+  ): Promise<SettlementResponse> {
+    return this.#serialize(() => this.#settle(payload, requirements));
+  }
+
+  async #settle(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
   ): Promise<SettlementResponse> {

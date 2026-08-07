@@ -19,7 +19,7 @@ import { deterministicKeypair } from "./helpers.js";
 describe("testnet bootstrap helpers", () => {
   it("generates an in-memory keypair and funds only its public address", async () => {
     const keypair = generateKeypair();
-    const fetchLike = vi.fn(async () =>
+    const fetchLike = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
       new Response(JSON.stringify({ hash: "a".repeat(64) }), { status: 200 }),
     );
 

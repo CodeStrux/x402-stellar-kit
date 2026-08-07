@@ -19,7 +19,7 @@ describe("HttpFacilitator", () => {
     const verifyResponse = await fixture<VerifyResponse>("verify-response-ok");
     const settleResponse = await fixture<SettlementResponse>("settle-response");
     const replies = [verifyResponse, settleResponse];
-    const fetchLike = vi.fn(async () =>
+    const fetchLike = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
       new Response(JSON.stringify(replies.shift()), { status: 200 }),
     );
     const facilitator = new HttpFacilitator({

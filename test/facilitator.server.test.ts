@@ -11,6 +11,7 @@ import { MockSigner } from "../src/signer.js";
 import {
   decodePaymentRequired,
   decodeSettlementResponse,
+  isExactOffer,
   encodePaymentPayload,
   type PaymentPayload,
   type PaymentRequirements,
@@ -195,16 +196,16 @@ describe("resource server", () => {
     const result = await server.handle({ method: "GET", url: resourceUrl, headers: {} });
 
     expect(result.kind).toBe("challenge");
-    expect(result.status).toBe(402);
     if (result.kind !== "challenge") throw new Error("expected challenge");
+    expect(result.status).toBe(402);
     expect(decodePaymentRequired(result.headers[HEADERS.paymentRequired])).toMatchObject({
       x402Version: 2,
       resource: { url: resourceUrl },
       accepts: [{ amount: "100000", payTo, asset, network }],
     });
     expect(
-      decodePaymentRequired(result.headers[HEADERS.paymentRequired]).accepts[0]
-        .extra,
+      decodePaymentRequired(result.headers[HEADERS.paymentRequired])
+        .accepts.filter(isExactOffer)[0]?.extra,
     ).toEqual({ areFeesSponsored: true });
   });
 
@@ -242,12 +243,22 @@ describe("resource server", () => {
       headers: { "payment-signature": encodePaymentPayload(payload) },
     });
 
+    // Verified, and settlement has NOT happened yet: the caller serves the
+    // resource first and only then pays for it.
+    expect(calls).toEqual(["verify"]);
+    expect(result.kind).toBe("verified");
+    if (result.kind !== "verified") throw new Error("expected verified");
+
+    const settled = await result.settle();
     expect(calls).toEqual(["verify", "settle"]);
-    expect(result.kind).toBe("paid");
-    if (result.kind !== "paid") throw new Error("expected paid");
-    expect(decodeSettlementResponse(result.headers[HEADERS.paymentResponse])).toEqual(
+    if (settled.kind !== "paid") throw new Error("expected paid");
+    expect(decodeSettlementResponse(settled.headers[HEADERS.paymentResponse])).toEqual(
       settlement,
     );
+
+    // Single-use: a second call must not pay twice.
+    await result.settle();
+    expect(calls).toEqual(["verify", "settle"]);
   });
 
   it("never settles a payload that verification rejected", async () => {
@@ -355,5 +366,65 @@ describe("resource server", () => {
         },
       }),
     ).resolves.toMatchObject({ kind: "rejected", status: 400 });
+  });
+});
+
+describe("a failed response is never charged for", () => {
+  /**
+   * The defect this covers: `handle()` settled on-chain before the application
+   * handler ran, so a handler that threw or answered 500 still moved money. The
+   * payer was billed for a response they never received, got no
+   * PAYMENT-RESPONSE header, and — because the signature had already been
+   * transmitted — carried a non-expiring indeterminate debit that a human had
+   * to reconcile by hand.
+   */
+  const arrange = async () => {
+    const calls: string[] = [];
+    const { payload } = await createPayload();
+    const facilitator: Facilitator = {
+      verify: async () => {
+        calls.push("verify");
+        return { isValid: true, payer };
+      },
+      settle: async () => {
+        calls.push("settle");
+        return { success: true, transaction: "tx-not-charged", network, payer };
+      },
+    };
+    const server = createResourceServer({
+      price: "0.01",
+      payTo,
+      asset,
+      network,
+      facilitator,
+      resource: { url: resourceUrl },
+    });
+    const result = await server.handle({
+      method: "GET",
+      url: resourceUrl,
+      headers: { "payment-signature": encodePaymentPayload(payload) },
+    });
+    return { calls, result };
+  };
+
+  it("verifies without settling, so a handler still has the chance to fail", async () => {
+    const { calls, result } = await arrange();
+    expect(result.kind).toBe("verified");
+    // The whole point: money has not moved at the moment the handler is invoked.
+    expect(calls).toEqual(["verify"]);
+  });
+
+  it("costs the payer nothing when the handler throws", async () => {
+    const { calls, result } = await arrange();
+    if (result.kind !== "verified") throw new Error("expected verified");
+
+    // The caller's handler blows up before it can produce the resource.
+    try {
+      throw new Error("upstream database is down");
+    } catch {
+      // …and settle() is simply never reached.
+    }
+    expect(calls).toEqual(["verify"]);
+    expect(calls).not.toContain("settle");
   });
 });

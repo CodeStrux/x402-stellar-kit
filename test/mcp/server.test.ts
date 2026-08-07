@@ -69,14 +69,22 @@ class SensitiveDenyingApprover implements Approver {
   }
 }
 
-const asResponse = (result: ResourceResult): Response => {
+const asResponse = async (result: ResourceResult): Promise<Response> => {
   if (result.kind === "rejected") {
     return new Response(result.reason, { status: result.status });
   }
-  return new Response(result.kind === "paid" ? "paid MCP body" : "payment required", {
-    status: result.status,
-    headers: result.headers,
-  });
+  if (result.kind === "challenge") {
+    return new Response("payment required", {
+      status: result.status,
+      headers: result.headers,
+    });
+  }
+  const body = "paid MCP body";
+  const settled = await result.settle();
+  if (settled.kind === "rejected") {
+    return new Response(settled.reason, { status: settled.status });
+  }
+  return new Response(body, { status: settled.status, headers: settled.headers });
 };
 
 const createHarness = (maxPaymentUnits = 200_000n) => {
@@ -100,7 +108,7 @@ const createHarness = (maxPaymentUnits = 200_000n) => {
   });
   const fetchLike: typeof globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
-    return asResponse(
+    return await asResponse(
       await resource.handle({
         method: request.method,
         url: request.url,
@@ -164,11 +172,13 @@ const connect = async (
   return client;
 };
 
-const structured = (result: Awaited<ReturnType<Client["callTool"]>>) => {
-  if (result.structuredContent === undefined) {
+const structured = (
+  result: Awaited<ReturnType<Client["callTool"]>>,
+): Record<string, unknown> => {
+  if (result.structuredContent === undefined || result.structuredContent === null) {
     throw new Error("Expected structured tool content");
   }
-  return result.structuredContent;
+  return result.structuredContent as Record<string, unknown>;
 };
 
 describe("x402 MCP server", () => {
@@ -294,18 +304,20 @@ describe("x402 MCP server", () => {
     };
     const client = await connect(harness);
 
-    let failure: unknown;
-    try {
-      await client.callTool({
-        name: "x402_paid_fetch",
-        arguments: { url: resourceUrl },
-      });
-    } catch (error) {
-      failure = error;
-    }
+    const result = await client.callTool({
+      name: "x402_paid_fetch",
+      arguments: { url: resourceUrl },
+    });
 
-    expect(String(failure)).toMatch(/inspect stderr diagnostics/);
-    expect(String(failure)).not.toContain(privateSentinel);
+    // Reported as an outcome, not thrown. The spoofed POL-MAX must not survive
+    // either: a denial code claims nothing was spent, and something was.
+    expect(result.isError).toBe(true);
+    expect(structured(result)).toMatchObject({
+      outcome: "indeterminate",
+      transmitted: true,
+    });
+    expect(structured(result)).not.toHaveProperty("code");
+    expect(JSON.stringify(result)).not.toContain(privateSentinel);
     const budget = await client.callTool({
       name: "x402_budget_status",
       arguments: {},
@@ -325,12 +337,12 @@ describe("x402 MCP server", () => {
       maxResponseBytes: 4,
     });
 
-    await expect(
-      client.callTool({
-        name: "x402_paid_fetch",
-        arguments: { url: resourceUrl },
-      }),
-    ).rejects.toThrow(/inspect stderr diagnostics/);
+    const result = await client.callTool({
+      name: "x402_paid_fetch",
+      arguments: { url: resourceUrl },
+    });
+    expect(result.isError).toBe(true);
+    expect(structured(result)).toMatchObject({ outcome: "indeterminate" });
 
     const budget = await client.callTool({
       name: "x402_budget_status",
@@ -368,12 +380,12 @@ describe("x402 MCP server", () => {
       requestTimeoutMs: 10,
     });
 
-    await expect(
-      client.callTool({
-        name: "x402_paid_fetch",
-        arguments: { url: resourceUrl },
-      }),
-    ).rejects.toThrow(/inspect stderr diagnostics/);
+    const result = await client.callTool({
+      name: "x402_paid_fetch",
+      arguments: { url: resourceUrl },
+    });
+    expect(result.isError).toBe(true);
+    expect(structured(result)).toMatchObject({ outcome: "indeterminate" });
 
     const budget = await client.callTool({
       name: "x402_budget_status",
@@ -405,8 +417,8 @@ describe("x402 MCP server", () => {
 
   it("reports remaining budget and persistent indeterminate reservations", async () => {
     const harness = createHarness();
-    harness.window.reserve("pending-1", 125_000n, 1_000, "a".repeat(64));
-    harness.window.markIndeterminate("pending-1");
+    await harness.window.reserve("pending-1", 125_000n, 1_000, "a".repeat(64), 500_000n);
+    await harness.window.markIndeterminate("pending-1");
     const client = await connect(harness);
 
     const result = await client.callTool({ name: "x402_budget_status", arguments: {} });
@@ -488,5 +500,193 @@ describe("x402 MCP server", () => {
     expect(serialized).not.toContain(privateSentinel);
     expect(serialized).not.toContain(approvalSentinel);
     expect(serialized).not.toContain('"evidence"');
+  });
+});
+
+describe("the preview chooses the same offer the payment would", () => {
+  const challengeHeader = (accepts: readonly unknown[]): string =>
+    Buffer.from(
+      JSON.stringify({
+        x402Version: 2,
+        error: "Payment required",
+        resource: { url: resourceUrl, description: "MCP test resource" },
+        accepts,
+      }),
+      "utf8",
+    ).toString("base64");
+
+  const exactOffer = {
+    scheme: "exact",
+    network,
+    amount: "100000",
+    asset,
+    payTo: payeeAddress,
+    maxTimeoutSeconds: 60,
+    extra: { areFeesSponsored: true },
+  };
+
+  const serving = (accepts: readonly unknown[]) => {
+    const harness = createHarness();
+    return {
+      ...harness,
+      fetchLike: async () =>
+        new Response("payment required", {
+          status: 402,
+          headers: { "PAYMENT-REQUIRED": challengeHeader(accepts) },
+        }),
+    };
+  };
+
+  it("renders the exact offer out of a mixed-scheme challenge", async () => {
+    const client = await connect(
+      serving([{ scheme: "upto", network, maxAmount: "500000" }, exactOffer]),
+    );
+
+    const result = await client.callTool({
+      name: "x402_render_payment_intent",
+      arguments: { url: resourceUrl },
+    });
+
+    expect(structured(result)).toMatchObject({
+      outcome: "intent",
+      intent: { scheme: "exact", amountUnits: "100000", payTo: payeeAddress },
+    });
+  });
+
+  it("denies POL-SCHEME when no offer uses a payable scheme", async () => {
+    const client = await connect(serving([{ scheme: "upto", network }]));
+
+    const result = await client.callTool({
+      name: "x402_render_payment_intent",
+      arguments: { url: resourceUrl },
+    });
+
+    expect(structured(result)).toEqual({
+      outcome: "denied",
+      code: "POL-SCHEME",
+      reason: "The payment scheme is not exact.",
+    });
+  });
+});
+
+/**
+ * The defect these cover: `denialCode` deliberately returns `undefined` for any
+ * error carrying `transmitted === true`, so a payment that had already left the
+ * process fell through to a generic `InternalError` reading "inspect stderr
+ * diagnostics". That is the shape that invites a retry, and a retry after
+ * transmission pays twice — with `intentHash`, the one handle a human has for
+ * reconciling it, sitting unread on the error object the whole time.
+ */
+describe("a transmitted payment is reported, never hidden behind an internal error", () => {
+  const transmitted = (): Error =>
+    Object.assign(new Error(privateSentinel), {
+      transmitted: true,
+      intentHash: "f".repeat(64),
+    });
+
+  /**
+   * Fails only on the request that carries `PAYMENT-SIGNATURE`.
+   *
+   * This is the whole reason the test bites. Call 1 is `probe`; by call 2
+   * `Payer.pay` has already set `signatureTransmitted` (src/payer.ts:250), so
+   * the failure runs through `withTransmissionContext` and is stamped with real
+   * `transmitted`/`intentHash` properties. A test that failed earlier would
+   * produce an ordinary error, take the pre-transmission release path, and pass
+   * with or without the fix.
+   */
+  const failingAfterTransmission = (harness: ReturnType<typeof createHarness>) => {
+    let calls = 0;
+    const fetchLike: typeof globalThis.fetch = async (input, init) => {
+      calls += 1;
+      if (calls >= 2) throw new Error("connection reset after the signature left");
+      return harness.fetchLike(input, init);
+    };
+    return { ...harness, fetchLike };
+  };
+
+  it("returns an indeterminate outcome carrying the intent hash", async () => {
+    const harness = createHarness();
+    const client = await connect(failingAfterTransmission(harness));
+
+    const result = await client.callTool({
+      name: "x402_paid_fetch",
+      arguments: { url: resourceUrl },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(structured(result)).toMatchObject({
+      outcome: "indeterminate",
+      transmitted: true,
+      intentHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(JSON.stringify(result)).toMatch(/do not retry/i);
+  });
+
+  it("reports the same intent hash the preview rendered", async () => {
+    const harness = createHarness();
+    const preview = await (await connect(harness)).callTool({
+      name: "x402_render_payment_intent",
+      arguments: { url: resourceUrl },
+    });
+    const client = await connect(failingAfterTransmission(harness));
+
+    const result = await client.callTool({
+      name: "x402_paid_fetch",
+      arguments: { url: resourceUrl },
+    });
+
+    expect(structured(result).intentHash).toBe(structured(preview).intentHash);
+  });
+
+  it("returns rather than throws, so a client cannot treat it as retryable", async () => {
+    const harness = createHarness();
+    const client = await connect(failingAfterTransmission(harness));
+
+    // Not `rejects`: a thrown McpError is a protocol failure a client may retry
+    // automatically, which is the one thing that must not happen here.
+    const result = await client.callTool({
+      name: "x402_paid_fetch",
+      arguments: { url: resourceUrl },
+    });
+    expect(result).toBeDefined();
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(privateSentinel);
+    expect(serialized).not.toContain(approvalSentinel);
+  });
+
+  it("still refuses a payment that failed before transmission with an error", async () => {
+    // A signer that throws never reaches the transport, so nothing was
+    // transmitted and nothing may have settled. Claiming indeterminacy here
+    // would be a lie in the safe direction, which is still a lie.
+    const harness = createHarness();
+    harness.signer.sign = async () => {
+      throw new Error("signer unavailable");
+    };
+    const client = await connect(harness);
+
+    await expect(
+      client.callTool({ name: "x402_paid_fetch", arguments: { url: resourceUrl } }),
+    ).rejects.toBeInstanceOf(McpError);
+  });
+
+  it("ignores a forged transmitted flag from a tool that cannot transmit", async () => {
+    // x402_render_payment_intent advertises that it pays nothing and never
+    // settles. A `transmitted` flag reaching it is forged by definition, and
+    // answering it with "money may have moved" would contradict the tool's own
+    // description on the strength of an attacker-set property.
+    const harness = createHarness();
+    const client = await connect({
+      ...harness,
+      fetchLike: async () => {
+        throw transmitted();
+      },
+    });
+
+    await expect(
+      client.callTool({
+        name: "x402_render_payment_intent",
+        arguments: { url: resourceUrl },
+      }),
+    ).rejects.toBeInstanceOf(McpError);
   });
 });

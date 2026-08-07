@@ -26,14 +26,23 @@ const server = createResourceServer({
   resource: { url: resourceUrl, description: "Offline paid report" },
 });
 
-const asResponse = (result: ResourceResult): Response => {
+const asResponse = async (result: ResourceResult): Promise<Response> => {
   if (result.kind === "rejected") {
     return new Response(result.reason, { status: result.status });
   }
-  return new Response(
-    result.kind === "paid" ? JSON.stringify({ message: "paid report" }) : "payment required",
-    { status: result.status, headers: result.headers },
-  );
+  if (result.kind === "challenge") {
+    return new Response("payment required", {
+      status: result.status,
+      headers: result.headers,
+    });
+  }
+  // The resource exists before a payment settles, never the other way round.
+  const body = JSON.stringify({ message: "paid report" });
+  const settled = await result.settle();
+  if (settled.kind === "rejected") {
+    return new Response(settled.reason, { status: settled.status });
+  }
+  return new Response(body, { status: settled.status, headers: settled.headers });
 };
 
 const fetchLike: typeof globalThis.fetch = async (input, init) => {

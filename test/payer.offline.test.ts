@@ -66,11 +66,14 @@ const localFetch = (
         headers: result.headers,
       });
     }
-    if (result.kind === "paid") {
-      return new Response(JSON.stringify({ message: "paid content" }), {
-        status: result.status,
-        headers: result.headers,
-      });
+    if (result.kind === "verified") {
+      // Serve then settle, as every adapter now does.
+      const body = JSON.stringify({ message: "paid content" });
+      const settled = await result.settle();
+      if (settled.kind === "rejected") {
+        return new Response(settled.reason, { status: settled.status });
+      }
+      return new Response(body, { status: settled.status, headers: settled.headers });
     }
     return new Response(result.reason, { status: result.status });
   }) as typeof globalThis.fetch;
@@ -123,7 +126,7 @@ describe("offline payer loop", () => {
     expect(new Headers(context.calls[1].init?.headers).has(HEADERS.paymentSignature)).toBe(
       true,
     );
-    expect(context.window.spentInWindow(now)).toBe(100_000n);
+    expect(await context.window.spentInWindow(now)).toBe(100_000n);
     expect(context.facilitator.balance(payerAddress)).toBe(400_000n);
     expect(context.facilitator.balance(payTo)).toBe(100_000n);
   });
@@ -148,7 +151,7 @@ describe("offline payer loop", () => {
 
     await expect(payer.pay(resourceUrl)).rejects.toBeInstanceOf(BindingDrift);
     expect(context.calls).toHaveLength(1);
-    expect(context.window.spentInWindow(now)).toBe(0n);
+    expect(await context.window.spentInWindow(now)).toBe(0n);
     expect(context.facilitator.balance(payerAddress)).toBe(500_000n);
   });
 
@@ -173,7 +176,7 @@ describe("offline payer loop", () => {
 
     await expect(payer.pay(resourceUrl)).rejects.toBeInstanceOf(BindingDrift);
     expect(context.calls).toHaveLength(1);
-    expect(context.window.spentInWindow(now)).toBe(0n);
+    expect(await context.window.spentInWindow(now)).toBe(0n);
   });
 
   it("never calls an approver or signer after policy denial", async () => {
@@ -202,7 +205,7 @@ describe("offline payer loop", () => {
       now: () => now,
     });
 
-    await expect(payer.pay(resourceUrl)).rejects.toMatchObject<Partial<PolicyDenied>>({
+    await expect(payer.pay(resourceUrl)).rejects.toMatchObject({
       name: "PolicyDenied",
       code: "POL-MAX",
     });
@@ -223,18 +226,19 @@ describe("offline payer loop", () => {
 
     await expect(payer.pay(resourceUrl)).rejects.toBeInstanceOf(ApprovalDenied);
     expect(context.calls).toHaveLength(1);
-    expect(context.window.spentInWindow(now)).toBe(0n);
+    expect(await context.window.spentInWindow(now)).toBe(0n);
   });
 
   it("rechecks the window after asynchronous approval before reserving", async () => {
     const context = setup();
     const approver: Approver = {
       approve: async () => {
-        context.window.reserve(
+        await context.window.reserve(
           "concurrent",
           150_000n,
           now,
           "concurrent-intent",
+          200_000n,
         );
         return { approved: true, evidence: {} };
       },
@@ -251,7 +255,7 @@ describe("offline payer loop", () => {
       now: () => now,
     });
 
-    await expect(payer.pay(resourceUrl)).rejects.toMatchObject<Partial<PolicyDenied>>({
+    await expect(payer.pay(resourceUrl)).rejects.toMatchObject({
       code: "POL-WINDOW",
     });
     expect(context.calls).toHaveLength(1);
@@ -349,13 +353,19 @@ describe("offline payer loop", () => {
         realSigner.verifyBinding(transaction, intent);
       },
     };
+    const record = async (event: string): Promise<void> => {
+      events.push(event);
+    };
     const window: WindowStore = {
-      spentInWindow: () => 0n,
-      reserve: () => events.push("reserve"),
-      commit: () => events.push("commit"),
-      markIndeterminate: () => events.push("indeterminate"),
-      listIndeterminate: () => [],
-      release: () => events.push("release"),
+      spentInWindow: async () => 0n,
+      reserve: async () => {
+        events.push("reserve");
+        return { accepted: true };
+      },
+      commit: () => record("commit"),
+      markIndeterminate: () => record("indeterminate"),
+      listIndeterminate: async () => [],
+      release: () => record("release"),
     };
     const fetchLike = (async (
       _input: string | URL | Request,
@@ -412,5 +422,169 @@ describe("offline payer loop", () => {
       "transmit",
       "commit",
     ]);
+  });
+});
+
+/**
+ * The defect these cover, in two halves.
+ *
+ * `WindowStore` was synchronous — `spentInWindow(now): bigint`,
+ * `reserve(...): void`. AGENTS.md tells production adopters to supply "one
+ * durable, shared, atomic store", and not one of Postgres, Redis or anything
+ * else with a network in front of it can be reached from that signature. The
+ * kit mandated something its own interface forbade.
+ *
+ * Async alone was not enough. `pay()` read the window, consulted an approver,
+ * and only then reserved — check-then-act. In-process against a `Map` the gap
+ * is unobservable; against a shared store two replicas both pass the check and
+ * both reserve, and the real ceiling becomes cap x replicas.
+ *
+ * Note what makes these bite. Converting `MemoryWindowStore` and every call
+ * site together leaves the whole suite passing either way, because nothing in
+ * the repo can tell the difference. Both stores below are ones no in-repo
+ * implementation can imitate: one resolves on a later macrotask, the other
+ * disagrees with itself between `spentInWindow` and `reserve`.
+ */
+describe("the window store is genuinely asynchronous", () => {
+  /** Resolves a turn late, so a missing `await` yields a Promise, not a value. */
+  class DeferredWindowStore implements WindowStore {
+    readonly #inner: MemoryWindowStore;
+
+    constructor(windowSeconds: number) {
+      this.#inner = new MemoryWindowStore(windowSeconds);
+    }
+
+    async #later<T>(work: () => Promise<T>): Promise<T> {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return work();
+    }
+
+    spentInWindow(at: number): Promise<bigint> {
+      return this.#later(() => this.#inner.spentInWindow(at));
+    }
+
+    reserve(
+      id: string,
+      units: bigint,
+      at: number,
+      intentHash: string,
+      capUnits: bigint,
+    ) {
+      return this.#later(() =>
+        this.#inner.reserve(id, units, at, intentHash, capUnits),
+      );
+    }
+
+    commit(id: string): Promise<void> {
+      return this.#later(() => this.#inner.commit(id));
+    }
+
+    markIndeterminate(id: string): Promise<void> {
+      return this.#later(() => this.#inner.markIndeterminate(id));
+    }
+
+    listIndeterminate(at: number) {
+      return this.#later(() => this.#inner.listIndeterminate(at));
+    }
+
+    release(id: string): Promise<void> {
+      return this.#later(() => this.#inner.release(id));
+    }
+  }
+
+  it("pays end to end against a store that resolves later", async () => {
+    const context = setup();
+    const window = new DeferredWindowStore(3_600);
+    const payer = new Payer({
+      signer: context.signer,
+      policy: policy(),
+      window,
+      fetchLike: localFetch(context.server, context.calls),
+      now: () => now,
+    });
+
+    const result = await payer.pay(resourceUrl);
+
+    expect(result.settlement.success).toBe(true);
+    expect(await window.spentInWindow(now)).toBe(100_000n);
+  });
+});
+
+describe("the store, not the caller, decides whether the cap allows a payment", () => {
+  class CountingSigner implements Signer {
+    readonly #delegate = new MockSigner(payerAddress);
+    signCalls = 0;
+
+    address(): string {
+      return this.#delegate.address();
+    }
+
+    async sign(intent: Parameters<Signer["sign"]>[0]) {
+      this.signCalls += 1;
+      return this.#delegate.sign(intent);
+    }
+
+    verifyBinding(transaction: string, intent: Parameters<Signer["sign"]>[0]): void {
+      this.#delegate.verifyBinding(transaction, intent);
+    }
+  }
+
+  it("refuses when reserve rejects, even though the advisory check saw room", async () => {
+    // The shape of a real race: the pre-approval read saw an empty budget, and
+    // by the time the reservation lands another replica has spent it. Only the
+    // store can see that, so only the store can refuse it.
+    const signer = new CountingSigner();
+    const context = setup(signer);
+    const window: WindowStore = {
+      spentInWindow: async () => 0n,
+      reserve: async () => ({ accepted: false, spentUnits: 490_000n }),
+      commit: async () => undefined,
+      markIndeterminate: async () => undefined,
+      listIndeterminate: async () => [],
+      release: async () => undefined,
+    };
+    const payer = new Payer({
+      signer,
+      policy: policy(),
+      window,
+      fetchLike: localFetch(context.server, context.calls),
+      now: () => now,
+    });
+
+    await expect(payer.pay(resourceUrl)).rejects.toMatchObject({
+      name: "PolicyDenied",
+      code: "POL-WINDOW",
+    });
+    // Nothing was signed. A refusal that arrives after signing is a different,
+    // worse outcome, and asserting this is what stops the test being satisfied
+    // by a late failure somewhere else in the flow.
+    expect(signer.signCalls).toBe(0);
+  });
+
+  it("reports what the store holds, not what the stale local check believed", async () => {
+    const context = setup();
+    const window: WindowStore = {
+      spentInWindow: async () => 0n,
+      reserve: async () => ({ accepted: false, spentUnits: 490_000n }),
+      commit: async () => undefined,
+      markIndeterminate: async () => undefined,
+      listIndeterminate: async () => [],
+      release: async () => undefined,
+    };
+    const payer = new Payer({
+      signer: context.signer,
+      policy: policy(),
+      window,
+      fetchLike: localFetch(context.server, context.calls),
+      now: () => now,
+    });
+
+    const failure = await payer.pay(resourceUrl).catch((error: unknown) => error);
+
+    expect(String(failure)).toContain("490000");
+    // Guards the un-awaited variant, where the interpolated value reads
+    // "undefined" or "[object Promise]" instead of a number.
+    expect(String(failure)).not.toContain("undefined");
+    expect(String(failure)).not.toContain("Promise");
   });
 });

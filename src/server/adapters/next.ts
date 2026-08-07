@@ -42,9 +42,20 @@ export const x402Next = (config: ResourceServerOptions) => {
           headers: result.headers,
         });
       }
+      // Serve first, settle second. A handler that throws or answers 5xx must
+      // not cost the payer anything: they would be billed for a response they
+      // never received, and their budget would carry a non-expiring
+      // indeterminate debit needing manual reconciliation.
       const downstream = await handler(request, context);
+      if (!downstream.ok) return downstream;
+
+      const settled = await result.settle();
+      if (settled.kind === "rejected") {
+        return new Response(settled.reason, { status: settled.status });
+      }
+
       const headers = new Headers(downstream.headers);
-      for (const [name, value] of Object.entries(result.headers)) {
+      for (const [name, value] of Object.entries(settled.headers)) {
         headers.set(name, value);
       }
       return new Response(downstream.body, {

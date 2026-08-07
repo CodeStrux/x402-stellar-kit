@@ -27,6 +27,9 @@ import {
 
 const SPONSORED_SOURCE =
   "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+/** Bounds the signed-ledger map if a caller signs without ever verifying. */
+const MAX_REMEMBERED_SIGNATURES = 64;
+
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_TIMEOUT_MS = 60_000;
 const MAX_I128 = (1n << 127n) - 1n;
@@ -64,6 +67,19 @@ export class StellarSigner implements Signer {
   readonly #fetchLike: typeof globalThis.fetch | undefined;
   readonly #signal: AbortSignal | undefined;
   readonly #timeoutMs: number;
+  /**
+   * The ledger this signer observed when it built each transaction.
+   *
+   * `verifyBinding` needs a current ledger to bound `signatureExpirationLedger`
+   * — without one it can only reject an expiration of zero, which lets an
+   * authorization outlive by days the window a human approved in seconds.
+   * `sign` already fetched that ledger, so recording it here costs nothing and
+   * is exact, where a second fetch would be both slower and slightly wrong.
+   *
+   * An entry is consumed by the verify that follows it. The cap is a
+   * belt-and-braces bound on a map that is normally empty.
+   */
+  readonly #signedAtLedger = new Map<string, number>();
 
   private constructor(keypair: Keypair, options: StellarSignerOptions) {
     this.#keypair = keypair;
@@ -185,10 +201,51 @@ export class StellarSigner implements Signer {
       )
       .build();
 
-    return { transaction: transaction.toXDR() };
+    const xdrTransaction = transaction.toXDR();
+    this.#rememberLedger(xdrTransaction, latest.sequence);
+    return { transaction: xdrTransaction };
   }
 
-  verifyBinding(transaction: string, intent: PaymentIntent): void {
-    verifyStellarBinding(transaction, intent, this.address());
+  #rememberLedger(transaction: string, sequence: number): void {
+    if (this.#signedAtLedger.size >= MAX_REMEMBERED_SIGNATURES) {
+      // Bound the map even if a caller signs without ever verifying. Dropping
+      // the oldest is safe: a missing entry falls back to asking the network.
+      const oldest = this.#signedAtLedger.keys().next();
+      if (!oldest.done) this.#signedAtLedger.delete(oldest.value);
+    }
+    this.#signedAtLedger.set(transaction, sequence);
+  }
+
+  /**
+   * The check the README calls load-bearing, now actually bounding the thing
+   * that carries spending authority.
+   *
+   * A Soroban authorization entry is signed independently of the envelope that
+   * carries it, and a facilitator may rebuild that envelope — so the envelope's
+   * `timeBounds` constrain nothing. `signatureExpirationLedger` is the only
+   * field that limits how long the authorization can be redeemed, and bounding
+   * it requires a current ledger. Without one this check could reject only an
+   * expiration of exactly zero, which let a payment a human approved for sixty
+   * seconds settle days later under the same intent hash.
+   */
+  async verifyBinding(transaction: string, intent: PaymentIntent): Promise<void> {
+    const recorded = this.#signedAtLedger.get(transaction);
+    this.#signedAtLedger.delete(transaction);
+    // Recorded is exact and free. Anything this signer did not produce still
+    // gets bounded, at the cost of one call — never skipped.
+    const currentLedger = recorded ?? (await this.#latestLedgerSequence(intent));
+    verifyStellarBinding(transaction, intent, this.address(), { currentLedger });
+  }
+
+  async #latestLedgerSequence(intent: PaymentIntent): Promise<number> {
+    const selectedNetwork = network(intent.network);
+    const rpc =
+      this.#rpc ??
+      new StellarRpc(this.#rpcUrl ?? selectedNetwork.rpcUrl, {
+        ...(this.#fetchLike === undefined ? {} : { fetchLike: this.#fetchLike }),
+      });
+    const signal = this.#signal ?? new AbortController().signal;
+    const latest = await rpc.getLatestLedger(signal, this.#timeoutMs);
+    return latest.sequence;
   }
 }

@@ -8,6 +8,7 @@ import { MockSigner } from "../../src/signer.js";
 import {
   decodePaymentRequired,
   encodePaymentPayload,
+  isExactOffer,
 } from "../../src/wire.js";
 
 export const PAYER = "payer-adapter";
@@ -39,9 +40,11 @@ export const adapterConfig = (
 
 export const signatureFor = async (encodedChallenge: string): Promise<string> => {
   const challenge = decodePaymentRequired(encodedChallenge);
-  const requirement = challenge.accepts[0];
+  // `accepts` may now carry offers on rails this kit cannot pay, so narrow
+  // before building an intent from one.
+  const requirement = challenge.accepts.filter(isExactOffer)[0];
   if (requirement === undefined) {
-    throw new Error("Expected one payment requirement");
+    throw new Error("Expected one payable payment requirement");
   }
   const transaction = await new MockSigner(PAYER).sign(
     paymentIntentFromRequirement(requirement, challenge.resource.url),

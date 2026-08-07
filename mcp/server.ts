@@ -8,7 +8,11 @@ import {
   paymentIntentFromRequirement,
   type PaymentIntent,
 } from "../src/intent.js";
-import { Payer, type PayerOptions } from "../src/payer.js";
+import {
+  Payer,
+  selectPayableRequirement,
+  type PayerOptions,
+} from "../src/payer.js";
 import {
   POLICY_CODE_DESCRIPTIONS,
   type PolicyCode,
@@ -242,7 +246,8 @@ const paidToolResult = (
 
 type X402ToolResult =
   | ReturnType<typeof toolResult>
-  | ReturnType<typeof paidToolResult>;
+  | ReturnType<typeof paidToolResult>
+  | ReturnType<typeof indeterminateResult>;
 
 const denialCode = (error: unknown): PolicyCode | undefined => {
   if ((error as { transmitted?: unknown }).transmitted === true) return undefined;
@@ -258,6 +263,55 @@ const denialResult = (code: PolicyCode) =>
     code,
     reason: POLICY_CODE_DESCRIPTIONS[code],
   });
+
+/**
+ * The payment left this process and its outcome is unknown.
+ *
+ * This is returned as a *result*, never thrown. A thrown `McpError` is a
+ * protocol-level failure, and the reasonable thing for a client to do with one
+ * is retry — which here means paying twice for real money. A result with
+ * `isError: true` is an outcome the model has to read and reason about, which
+ * is exactly what an indeterminate payment demands.
+ *
+ * It carries `intentHash` when one is recoverable, because that hash is the
+ * only handle a human has for reconciling the payment against the ledger. It
+ * carries no message, no stack, no key material and no approver evidence: the
+ * error that produced it is untrusted, and everything the agent legitimately
+ * needs is already in these fields.
+ */
+const indeterminateResult = (intentHash: string | undefined) => {
+  const structuredContent = {
+    outcome: "indeterminate",
+    transmitted: true,
+    ...(intentHash === undefined ? {} : { intentHash }),
+    reason:
+      "The signed payment was transmitted and its outcome is unknown; it may have settled. " +
+      "Do NOT retry this payment — a retry after transmission can pay twice. " +
+      "Call x402_budget_status to inspect the rolling window, and have a human establish the " +
+      "on-chain result before anything is committed or released.",
+  } as Record<string, unknown>;
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(structuredContent) }],
+    structuredContent,
+    isError: true as const,
+  };
+};
+
+/**
+ * Read `transmitted` as an **own** property. `withTransmissionContext` always
+ * defines it directly on the error instance, so requiring an own property costs
+ * nothing and refuses a value inherited from a prototype an attacker chose.
+ */
+const wasTransmitted = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  has(error as Record<string, unknown>, "transmitted") &&
+  (error as { transmitted?: unknown }).transmitted === true;
+
+const transmittedIntentHash = (error: unknown): string | undefined => {
+  const value = (error as { intentHash?: unknown }).intentHash;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+};
 
 const has = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
@@ -387,11 +441,25 @@ export const createX402McpServer = async (
       try {
         return await operation();
       } catch (error) {
+        const name = error instanceof Error ? error.name : "unknown";
+        /*
+         * Only the tool that can transmit may report a transmission.
+         *
+         * `guarded` wraps all three tools, and the other two advertise that
+         * they pay nothing and never settle. A `transmitted` flag arriving from
+         * one of those is forged by definition, and answering it with "money
+         * may have moved" would make this server contradict its own tool
+         * description on the strength of a property an attacker set.
+         */
+        if (toolName === "x402_paid_fetch" && wasTransmitted(error)) {
+          process.stderr.write(
+            `[x402-mcp] ${toolName} indeterminate after transmission (${name})\n`,
+          );
+          return indeterminateResult(transmittedIntentHash(error));
+        }
         const code = denialCode(error);
         if (code !== undefined) return denialResult(code);
-        process.stderr.write(
-          `[x402-mcp] ${toolName} failed (${error instanceof Error ? error.name : "unknown"})\n`,
-        );
+        process.stderr.write(`[x402-mcp] ${toolName} failed (${name})\n`);
         throw new sdk.McpError(
           sdk.ErrorCode.InternalError,
           `${toolName} failed; inspect stderr diagnostics`,
@@ -403,15 +471,12 @@ export const createX402McpServer = async (
       const url = urlArgument(args, sdk, toolName);
       return guarded(async () => {
         const challenge = await payer.probe(url);
-        const requirement = challenge.accepts.find((candidate) =>
-          policy.allowedNetworks.includes(candidate.network),
+        // The same selection `Payer.pay` performs, so the preview cannot name a
+        // different offer — or a different denial code — than the payment will.
+        const requirement = selectPayableRequirement(
+          challenge.accepts,
+          policy.allowedNetworks,
         );
-        if (requirement === undefined) {
-          throw new PolicyDenied(
-            "POL-NETWORK",
-            "No offered payment requirement uses an allowed network",
-          );
-        }
         const intent = paymentIntentFromRequirement(
           requirement,
           challenge.resource.url,
@@ -452,16 +517,17 @@ export const createX402McpServer = async (
       }
       return guarded(async () => {
         const timestamp = now();
-        const spent = window.spentInWindow(timestamp);
+        const spent = await window.spentInWindow(timestamp);
         const remaining =
           spent >= policy.windowCapUnits ? 0n : policy.windowCapUnits - spent;
+        const indeterminate = await window.listIndeterminate(timestamp);
         return toolResult({
           outcome: "budget",
           windowCapUnits: policy.windowCapUnits.toString(),
           spentUnits: spent.toString(),
           remainingUnits: remaining.toString(),
           windowSeconds: policy.windowSeconds,
-          indeterminate: window.listIndeterminate(timestamp).map((entry) => ({
+          indeterminate: indeterminate.map((entry) => ({
             id: entry.id,
             units: entry.units.toString(),
             reservedAt: entry.reservedAt,

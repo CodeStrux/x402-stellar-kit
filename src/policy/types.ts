@@ -4,7 +4,7 @@ export const POLICY_CODE_DESCRIPTIONS = Object.freeze({
   "POL-ORIGIN": "The resource origin is not allowed.",
   "POL-PAYTO": "The recipient is not allowed.",
   "POL-ASSET": "The asset is not allowed.",
-  "POL-TIMEOUT": "The payment timeout is outside the configured bound.",
+  "POL-TIMEOUT": "The payment timeout is outside the allowed bound.",
   "POL-MAX": "The payment amount is non-positive or exceeds the per-payment cap.",
   "POL-WINDOW": "The payment would exceed the rolling-window cap.",
   "POL-DRIFT": "The signed transaction does not match the approved intent.",
