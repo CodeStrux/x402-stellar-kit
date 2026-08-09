@@ -5,6 +5,38 @@ This project follows semantic versioning for `0.x`: a breaking change bumps the 
 > Sections are titled `## Unreleased` until the version is cut. `npm version minor` performs the
 > bump, so a published tree never carries a changelog naming a version its own manifest does not.
 
+## Unreleased
+
+### Security
+
+- `scripts/verify-pack.sh` packs the package, extracts the tarball, and scans the
+  extracted contents. `dist/` is gitignored and shipped via `files`, and
+  `secret-scan.sh` excluded it, so 68 of the 88 published files had never been read
+  by any control in this repository. Also asserts every advertised entry point is
+  present and diffs the packed file list against `scripts/packed-files.txt`.
+- `scripts/secret-scan.sh` streams file content to `grep` instead of holding it in a
+  shell variable. `content="$(cat file)"` cannot survive a NUL byte; bash drops it,
+  and dropping it deletes the byte acting as a word boundary, so `x\0S…` becomes
+  `xS…` and every `\b`-anchored pattern stops matching. Measured on bash 5.3: the
+  same file and pattern report clean through the variable and hit through the stream.
+- `scripts/secret-scan.sh --path DIR` scans a directory outside git's view.
+
+### Changed
+
+- CI pins actions to commit SHAs, drops the checkout credentials, and gains a
+  timeout, job-level permissions and concurrency. SHA pinning is enforced repository-wide.
+- `npm run verify` now includes `verify:pack`.
+
+### Added
+
+- `.github/workflows/release.yml` stages a provenanced release over OIDC. It cannot
+  publish; a maintainer promotes the staged tarball with 2FA.
+- `.github/workflows/live.yml` runs the testnet suite weekly — the only control that
+  would notice Stellar changing underneath the library.
+- `.github/workflows/dependency-review.yml` on pull requests, advisory.
+- CONTRIBUTING.md, CODE_OF_CONDUCT.md, CODEOWNERS, issue and pull-request templates,
+  Dependabot, `.gitattributes`, `.editorconfig`, `.nvmrc`.
+
 ## 0.2.0
 
 Ten defects found by a security review of the initial release. `0.1.0` is deprecated: it is live on
