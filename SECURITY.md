@@ -19,7 +19,11 @@ flaw there can cost someone real money the moment they move past testnet. Report
 
 ## Reporting a vulnerability
 
-Email **aaj@codestrux.tech** with:
+Use the **[private advisory form](https://github.com/CodeStrux/x402-stellar-kit/security/advisories/new)**.
+It is visible only to the maintainers, it lets us work on a fix with you in the same place, and it
+issues the CVE if one is warranted. Email **aaj@codestrux.tech** if you would rather not use GitHub.
+
+Either way, include:
 
 - what an attacker gains, concretely — a wrong recipient, an unbounded authorization, a double
   payment, a drained budget;
@@ -28,7 +32,8 @@ Email **aaj@codestrux.tech** with:
 
 Please **do not open a public issue first** for anything that lets a payment be authorized, redirected,
 duplicated, or repudiated. Everything else — a crash, a typing bug, a documentation error — is fine in
-the open tracker.
+the open tracker. Blank issues are turned off and the advisory form sits at the top of the issue
+chooser, so the private route is the first one you meet rather than a rule you have to remember.
 
 Expect an acknowledgement within **3 working days** and an assessment within **10**. If a report is
 valid you will be credited in the changelog unless you would rather not be.

@@ -1,0 +1,49 @@
+version: 2
+
+# Two jobs here, and the second is the important one.
+#
+# npm: the money path has exactly two runtime dependencies, exact-pinned with no
+# ^ or ~. That is a stated property of this package, so a bump is a decision
+# someone makes, not something a range does silently overnight. Dependabot is how
+# the decision arrives as a reviewable pull request.
+#
+# github-actions: CI pins actions to commit SHAs. A SHA never goes stale on its
+# own and never gets a security fix either, so pinning without this creates
+# frozen, unpatched actions. Dependabot rewrites the SHA and keeps the trailing
+# version comment accurate.
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: America/Costa_Rica
+    open-pull-requests-limit: 5
+    versioning-strategy: increase # keep the exact pins exact
+    commit-message:
+      prefix: deps
+    groups:
+      # Framework adapters and type packages are tested together and move
+      # together; one pull request per week rather than a dozen.
+      dev-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+    # Runtime dependencies stay ungrouped and arrive one at a time. zod and
+    # stellar-base sit on the signing path; each deserves its own diff.
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: America/Costa_Rica
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]

@@ -1,5 +1,8 @@
 # x402 Stellar Kit
 
+[![CI](https://github.com/CodeStrux/x402-stellar-kit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/CodeStrux/x402-stellar-kit/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/x402-stellar-kit)](https://www.npmjs.com/package/x402-stellar-kit)
+
 ```text
 npm run demo           offline · no network, no keys, no config
 npm run demo:testnet   real Soroban settlement · friendbot-funded, still zero secrets
@@ -176,6 +179,15 @@ npm run build
 npm test            # offline; no keys or network
 npm run test:live   # Stellar testnet
 ```
+
+## Contributing
+
+[CONTRIBUTING.md](./CONTRIBUTING.md) covers the setup, the one invariant, and what a change to the
+money path has to prove. `main` takes signed commits through pull requests only.
+
+Found a way to authorize, redirect, duplicate or repudiate a payment? Use the
+[private advisory form](https://github.com/CodeStrux/x402-stellar-kit/security/advisories/new), not a
+public issue — [SECURITY.md](./SECURITY.md) explains the split.
 
 ## License
 

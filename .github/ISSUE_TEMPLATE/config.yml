@@ -1,0 +1,22 @@
+blank_issues_enabled: false
+
+# SECURITY.md asks people not to open a public issue for anything that lets a
+# payment be authorized, redirected, duplicated or repudiated. Asking is not a
+# control. Turning off blank issues and putting the advisory form at the top of
+# the chooser is — it makes the private route the first thing a reporter sees,
+# before they have typed the exploit into a public text box.
+
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/CodeStrux/x402-stellar-kit/security/advisories/new
+    about: >-
+      Anything that lets a payment be authorized, redirected, duplicated or
+      repudiated. This is private to the maintainers — please do not open a
+      public issue for it. Email aaj@codestrux.tech if you would rather not
+      use GitHub.
+
+  - name: Question about using the kit
+    url: https://github.com/CodeStrux/x402-stellar-kit#readme
+    about: >-
+      Start with the README, AGENTS.md, and `npm run demo` — the offline demo
+      runs with no network, no keys and no configuration.

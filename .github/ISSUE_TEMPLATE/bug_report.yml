@@ -1,0 +1,68 @@
+name: Bug report
+description: Something behaves differently from what the documentation promises.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        **If this lets a payment be authorized, redirected, duplicated or
+        repudiated, close this tab** and use the
+        [private advisory form](https://github.com/CodeStrux/x402-stellar-kit/security/advisories/new)
+        instead. Everything else — a crash, a typing bug, a documentation error —
+        belongs here in the open.
+
+  - type: checkboxes
+    id: not-a-denial
+    attributes:
+      label: Is this actually a denial?
+      description: >-
+        A policy denial is a correct outcome, not a bug. `POL-PAYTO`,
+        `POL-MAX`, `POL-WINDOW` and the rest mean the kit refused to authorize
+        something it could not bind — see "Denials are outcomes" in AGENTS.md.
+      options:
+        - label: This is not the kit correctly refusing a payment.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`npm ls x402-stellar-kit`, or the commit you looked at."
+      placeholder: "0.2.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened
+      description: >-
+        Name the promise that was broken — a README line, an AGENTS.md table row,
+        a denial code that should or should not have fired.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Smallest reproduction
+      description: >-
+        A failing test is ideal; `npm test` is offline and needs no keys or
+        network, so a test case usually costs less than prose. Otherwise the
+        shortest script that shows it.
+      render: typescript
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: "Node version, OS, and which facilitator/approver/signer you supplied."
+      placeholder: |
+        node -v      : v22.x
+        os           : Ubuntu 24.04
+        facilitator  : MockFacilitator
+        approver     : AutoApprover
+    validations:
+      required: true

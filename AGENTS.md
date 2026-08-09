@@ -191,5 +191,25 @@ Only `GET` resources without request bodies are payable today. `PaymentIntent` b
 - `npm test` is offline, replaces accidental global fetches with a failure, and needs no keys.
 - `npm run test:live` touches Stellar testnet and may need network access and testnet setup.
 - `npm run demo` is offline; `npm run demo:testnet` creates and funds throwaway testnet accounts at runtime.
+- `npm run verify` is the whole gate: build, type-check, tests, worktree scan, `verify-dist`, `verify-pack`.
 
 Do not run pubnet operations, publish the package, or add credentials while working in this repository.
+
+## Repository rules a change can break by accident
+
+`main` accepts signed commits through squash-merged pull requests only, with CI green. See
+[CONTRIBUTING.md](./CONTRIBUTING.md). Two constraints are invisible from the code and expensive to
+discover the hard way:
+
+- **The job id `verify` in `.github/workflows/ci.yml` is a required status check.** Renaming it,
+  adding a job-level `name:`, adding a matrix (which renames the check to `verify (22)`), or adding
+  `paths:` filters makes the branch rule permanently unsatisfiable — including for the pull request
+  that would undo it. To split the job, add an `if: always()` aggregator and re-point the ruleset in
+  the same change.
+- **`scripts/verify-pack.sh` compares the packed file list to `scripts/packed-files.txt`.** Adding or
+  removing a shipped file is meant to fail until the manifest is regenerated with
+  `UPDATE_MANIFEST=1 ./scripts/verify-pack.sh` and the diff is committed. That diff is the review.
+
+`scripts/secret-scan.sh` runs `POSTURE=public` here and hard-fails on private-infrastructure strings
+with no bypass flag. Prose about deployment or credentials will trip it; that is the intended
+behaviour, so fix the prose rather than the scanner.

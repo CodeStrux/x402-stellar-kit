@@ -1,0 +1,16 @@
+# Normalise line endings on the way in.
+#
+# Functional, not cosmetic: scripts/secret-scan.sh and scripts/verify-pack.sh are
+# grep over line-oriented patterns, and the pre-commit hook and CI both run them.
+# A CRLF-committing contributor changes what those patterns see.
+* text=auto eol=lf
+
+# Shell scripts are executed by CI and by the pre-commit hook; CRLF makes the
+# shebang unparseable and produces "bad interpreter" rather than a useful error.
+*.sh text eol=lf
+
+# Generated. Collapse it in reviews and keep it out of language statistics.
+package-lock.json linguist-generated=true -diff
+
+# Captured wire fixtures are the conformance oracle. Byte-exact, never munged.
+fixtures/** -text

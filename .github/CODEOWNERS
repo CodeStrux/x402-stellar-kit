@@ -1,0 +1,9 @@
+# Routing, not a gate.
+#
+# This is deliberately NOT paired with the "require review from Code Owners"
+# branch rule. The code owner and the only regular author are the same person,
+# GitHub does not permit self-approval, and the combination is therefore an
+# unsatisfiable requirement rather than a control. Its job here is to put the
+# right reviewer on a pull request automatically.
+
+* @Araya2001
