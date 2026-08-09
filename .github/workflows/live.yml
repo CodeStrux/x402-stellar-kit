@@ -1,0 +1,53 @@
+name: Live testnet
+
+# The offline suite proves this library still agrees with itself. It cannot prove
+# it still agrees with Stellar. For a payment-authorization library, "the chain
+# changed and we are now signing something subtly wrong" is the highest-consequence
+# failure mode there is, and nothing else in this repo would notice it.
+#
+# Runs on a schedule and on demand. NEVER on pull_request: it needs real network,
+# takes minutes, and a fork must not be able to trigger it.
+#
+# No secrets. test/live generates throwaway keypairs at runtime and funds them
+# with friendbot; there is nothing here to leak and nothing to steal.
+#
+# GitHub disables scheduled workflows after 60 days without repository activity.
+# If this stops reporting, that is the likely reason — re-enable it in the Actions tab.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    # Forks inherit the schedule; they must not spend their runners on our testnet.
+    if: github.repository == 'CodeStrux/x402-stellar-kit'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - name: Build
+        run: npm run build
+
+      # test/live self-skips when testnet is unreachable and rethrows on anything
+      # that is not a transient network failure, so a red run here means the
+      # library is wrong, not that the internet was.
+      - name: Settle against Stellar testnet
+        run: npm run test:live

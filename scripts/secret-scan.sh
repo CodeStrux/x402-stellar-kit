@@ -3,6 +3,11 @@
 #
 #   scripts/secret-scan.sh            scan the whole working tree
 #   scripts/secret-scan.sh --staged   scan only staged content (pre-commit hook)
+#   scripts/secret-scan.sh --path DIR scan every file under DIR, ignoring git
+#
+# --path exists for one reason: dist/ is gitignored, so the two git-driven modes
+# above cannot see it — yet dist/ is most of what `npm publish` ships. verify-pack.sh
+# extracts the real tarball and points this at it. Nothing else scans those bytes.
 #
 # Repo posture is read from scripts/secret-scan.conf:
 #   POSTURE=public   also bans private-infra provenance strings
@@ -19,7 +24,18 @@ POSTURE=private
 [ -f "$HERE/secret-scan.conf" ] && . "$HERE/secret-scan.conf"
 
 STAGED=0
-[ "${1:-}" = "--staged" ] && STAGED=1
+PATH_MODE=""
+case "${1:-}" in
+  --staged) STAGED=1 ;;
+  --path)
+    PATH_MODE="${2:-}"
+    [ -n "$PATH_MODE" ] || { printf 'secret-scan: --path needs a directory\n' >&2; exit 1; }
+    [ -d "$PATH_MODE" ] || { printf 'secret-scan: not a directory: %s\n' "$PATH_MODE" >&2; exit 1; }
+    ROOT="$(cd "$PATH_MODE" && pwd)"
+    ;;
+  "") ;;
+  *) printf 'secret-scan: unknown argument: %s\n' "$1" >&2; exit 1 ;;
+esac
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'secret-scan: %s\n' "$*" >&2; exit 1; }
@@ -56,7 +72,11 @@ PUBLIC_ONLY_PATTERNS=(
 
 # --- file list ----------------------------------------------------------------
 list_files() {
-  if [ "$STAGED" -eq 1 ]; then
+  if [ -n "$PATH_MODE" ]; then
+    # Everything under the directory, including what git would have ignored —
+    # that is the whole point of this mode.
+    ( cd "$ROOT" && find . -type f -printf '%P\n' )
+  elif [ "$STAGED" -eq 1 ]; then
     git -C "$ROOT" diff --cached --name-only --diff-filter=ACMR
   else
     # tracked AND untracked-but-not-ignored. `ls-files` alone sees only tracked
@@ -66,38 +86,58 @@ list_files() {
 }
 
 # Never scan the scanner itself (it necessarily contains every pattern).
-SELF_REL="$(realpath --relative-to="$ROOT" "${BASH_SOURCE[0]}")"
+SELF_REL="$(realpath --relative-to="$ROOT" "${BASH_SOURCE[0]}" 2>/dev/null || echo '')"
 
-mapfile -t FILES < <(list_files | grep -Ev \
-  -e '^(node_modules|dist|build|coverage|target|\.next)/' \
-  -e '/(node_modules|dist|build|coverage|target|\.next)/' \
-  -e "^${SELF_REL}$" \
-  -e '^scripts/secret-scan\.(sh|conf)$' \
-  || true)
+if [ -n "$PATH_MODE" ]; then
+  # In --path mode dist/ is precisely what we came to read, so it is NOT excluded.
+  mapfile -t FILES < <(list_files | grep -Ev -e '(^|/)node_modules/' || true)
+else
+  mapfile -t FILES < <(list_files | grep -Ev \
+    -e '^(node_modules|dist|build|coverage|target|\.next)/' \
+    -e '/(node_modules|dist|build|coverage|target|\.next)/' \
+    -e "^${SELF_REL}$" \
+    -e '^scripts/secret-scan\.(sh|conf)$' \
+    || true)
+fi
 
 [ "${#FILES[@]}" -eq 0 ] && { say "secret-scan: nothing to scan"; exit 0; }
 
 # --- scan ---------------------------------------------------------------------
+#
+# Content is STREAMED to grep, never held in a shell variable.
+#
+# `content="$(cat file)"` cannot survive a NUL byte — bash drops them and warns.
+# Dropping a NUL does not merely truncate: it deletes the byte that was acting as
+# a word boundary, so `x\0S...` becomes `xS...` and every `\b`-anchored pattern
+# below stops matching. Measured, bash 5.3: a real strkey one NUL into a file
+# scanned CLEAN through the variable and is FOUND through the stream. The `-a`
+# flag exists for exactly the "a key hidden in a blob" case, and a command
+# substitution was quietly taking it away.
 hits=0
+
+# Emits one file's content, from the index or from the filesystem.
+emit() {
+  if [ "$STAGED" -eq 1 ]; then
+    git -C "$ROOT" show ":$1" 2>/dev/null || true
+  else
+    cat "$ROOT/$1" 2>/dev/null || true
+  fi
+}
+
 scan() {
-  local label="$1" pattern="$2" f content
+  local label="$1" pattern="$2" f
   for f in "${FILES[@]}"; do
     [ -f "$ROOT/$f" ] || continue
-    if [ "$STAGED" -eq 1 ]; then
-      content="$(git -C "$ROOT" show ":$f" 2>/dev/null || true)"
-    else
-      content="$(cat "$ROOT/$f" 2>/dev/null || true)"
-    fi
     # -a: scan binary content as text too — a key hidden in a blob still counts
-    if printf '%s' "$content" | grep -aqE -- "$pattern"; then
+    if emit "$f" | grep -aqE -- "$pattern"; then
       printf '\n  %s in %s\n' "$label" "$f" >&2
-      printf '%s' "$content" | grep -anE -- "$pattern" | head -3 | cut -c1-120 | sed 's/^/    /' >&2
+      emit "$f" | grep -anE -- "$pattern" | head -3 | cut -c1-120 | sed 's/^/    /' >&2
       hits=$((hits + 1))
     fi
   done
 }
 
-say "secret-scan: posture=$POSTURE files=${#FILES[@]} staged=$STAGED"
+say "secret-scan: posture=$POSTURE files=${#FILES[@]} staged=$STAGED${PATH_MODE:+ path=$PATH_MODE}"
 
 for p in "${CRED_PATTERNS[@]}"; do scan "CREDENTIAL" "$p"; done
 if [ "$POSTURE" = "public" ]; then

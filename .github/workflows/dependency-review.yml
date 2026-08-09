@@ -1,0 +1,39 @@
+name: Dependency review
+
+# The money path has exactly two runtime dependencies, both exact-pinned. That is
+# a deliberate, stated property of this package — see README, "Why only two runtime
+# dependencies". This job makes any change to that graph visible in the pull request
+# that causes it, which is the only moment the decision is cheap to reverse.
+#
+# Advisory, not a required status check: a fresh advisory against a transitive
+# devDependency should surface, not redden main and block unrelated work.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write # to leave the summary comment
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+          # Apache-2.0 code. A copyleft dependency in the money path is a
+          # licensing decision, not a dependency bump, so it stops here.
+          deny-licenses: AGPL-3.0, AGPL-3.0-only, AGPL-3.0-or-later, GPL-2.0, GPL-3.0, SSPL-1.0

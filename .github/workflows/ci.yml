@@ -5,8 +5,18 @@ name: CI
 # alongside the build, the type check and the offline test suite.
 #
 # Deliberately absent: any publish step, any deploy, any secret. Releases are cut
-# by hand — publishing needs a 2FA OTP no workflow can supply, and that is the
-# intended property, not a limitation to engineer around.
+# by release.yml, which stages a provenanced tarball that stays invisible until a
+# maintainer promotes it on npmjs.com with 2FA. Nothing here can publish.
+#
+# Actions are pinned to full commit SHAs, not tags: a tag is a mutable pointer,
+# and `uses:` grants the referenced code the job's token and workspace. Dependabot
+# bumps these and preserves the trailing version comment.
+#
+# THE JOB ID `verify` IS A REQUIRED STATUS CHECK on main. Renaming it, adding a
+# job-level `name:`, adding a matrix (which would make it `verify (22)`), or adding
+# `paths:` filters all rename the check context and silently make the branch rule
+# unsatisfiable. If the job must ever be split, add an `if: always()` aggregator
+# job and re-point the ruleset in the same change.
 
 on:
   push:
@@ -16,17 +26,27 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # secret-scan.sh asks git for the repository root and enumerates
           # tracked files; a shallow checkout is enough for both.
           fetch-depth: 1
+          # Nothing after this step needs to talk to the remote, so the token
+          # has no reason to stay in .git/config where later steps could read it.
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -47,8 +67,11 @@ jobs:
       - name: Secret and provenance scan
         run: ./scripts/secret-scan.sh
 
-      - name: Verify the publishable dist
-        run: ./scripts/verify-dist.sh
+      # Scans the packed tarball, not the worktree. dist/ is gitignored and so was
+      # never reachable by the worktree scan above, yet it is 68 of the 88 files
+      # npm ships. This is the only step that reads the bytes a consumer installs.
+      - name: Verify and scan the publishable tarball
+        run: ./scripts/verify-pack.sh
 
       # Proves the offline demo still completes its whole refusal sequence —
       # the thing a reader runs first, and the one that breaks silently.

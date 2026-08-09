@@ -61,7 +61,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
-    "verify": "npm run build && npm run typecheck && npm test && ./scripts/secret-scan.sh && ./scripts/verify-dist.sh",
+    "verify": "npm run build && npm run typecheck && npm test && ./scripts/secret-scan.sh && ./scripts/verify-dist.sh && ./scripts/verify-pack.sh",
     "test": "vitest run",
     "test:live": "vitest run --config vitest.live.config.ts",
     "demo": "npm run build && node dist/examples/localhost-demo/index.js",
@@ -71,6 +71,7 @@
     "example:pay": "npm run build && node dist/examples/pay-an-endpoint/index.js",
     "scan": "./scripts/secret-scan.sh",
     "verify:dist": "./scripts/verify-dist.sh",
+    "verify:pack": "./scripts/verify-pack.sh",
     "prepublishOnly": "npm run build && ./scripts/verify-dist.sh"
   },
   "dependencies": {
