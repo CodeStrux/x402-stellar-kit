@@ -7,6 +7,13 @@ name: Dependency review
 #
 # Advisory, not a required status check: a fresh advisory against a transitive
 # devDependency should surface, not redden main and block unrelated work.
+#
+# PREREQUISITE: the repository's Dependency graph must be enabled, under
+# Settings -> Code security. Without it this job fails every run with
+# "Dependency review is not supported on this repository" — which is a loud,
+# self-describing failure rather than a silent pass, and is why it is not
+# wrapped in continue-on-error. There is no API to enable the graph; it is a
+# checkbox.
 
 on:
   pull_request:
