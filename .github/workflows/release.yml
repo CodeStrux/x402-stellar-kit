@@ -1,0 +1,102 @@
+name: Release
+
+# Stages a release to npm. It cannot publish one.
+#
+# npm's trusted publisher for this package is configured to allow `npm stage
+# publish` and NOT `npm publish`. So this workflow builds the tarball, attaches a
+# provenance attestation via OIDC, and stages it — invisible to `npm install`
+# until a maintainer promotes it on npmjs.com with 2FA. The human authorization
+# that used to be an OTP typed on a laptop is still there; it moved to the point
+# where someone can compare the staged tarball against a local build of the tag.
+#
+# What this buys over publishing from a laptop:
+#   - provenance. Until now nobody could verify that the package on the registry
+#     was built from this repository at all. `npm audit signatures` can now.
+#   - no long-lived npm token exists anywhere. OIDC mints a short-lived one.
+#   - the build runs on a clean checkout, so verify-dist.sh's mtime staleness
+#     question stops being answerable-in-principle and becomes structural.
+#
+# There is deliberately no free-text input. Dispatch this workflow AGAINST A TAG
+# and github.ref_name is the tag — nothing user-supplied ever reaches a shell.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stage:
+    # workflow_dispatch can be aimed at a branch. Releasing anything but a tag
+    # would produce provenance pointing at a moving target.
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write # the OIDC token trusted publishing exchanges for a short-lived npm token
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm >= 11.5.1; the runner ships 10.x.
+      - name: Upgrade npm
+        run: npm install -g npm@^11.5.1
+
+      - run: npm ci --ignore-scripts
+
+      # The tag is the release. If package.json disagrees with it, the provenance
+      # would attest to a version nobody asked for.
+      - name: Tag and package.json must agree
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "$REF_NAME" in
+            v*) ;;
+            *) echo "refusing: '$REF_NAME' is not a v* tag" >&2; exit 1 ;;
+          esac
+          pkg="$(node -p 'require("./package.json").version')"
+          if [ "v$pkg" != "$REF_NAME" ]; then
+            echo "refusing: tag $REF_NAME but package.json says $pkg" >&2
+            exit 1
+          fi
+          echo "releasing $pkg"
+
+      - name: Build
+        run: npm run build
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Test (offline)
+        run: npm test
+
+      - name: Scan the worktree
+        run: ./scripts/secret-scan.sh
+
+      # The last look at the actual bytes before they leave the building.
+      - name: Verify and scan the publishable tarball
+        run: ./scripts/verify-pack.sh
+
+      # Provenance is automatic here — trusted publishing attaches it without
+      # --provenance, and publishConfig.provenance is deliberately NOT set in
+      # package.json because it would make a local `npm publish` hard-error and
+      # remove the manual fallback.
+      - name: Stage the release
+        run: npm stage publish
+
+      - name: What happens next
+        run: |
+          echo "Staged. It is NOT public yet."
+          echo "Promote it at https://www.npmjs.com/package/x402-stellar-kit/access with 2FA,"
+          echo "after diffing the staged tarball against a local build of this tag."
